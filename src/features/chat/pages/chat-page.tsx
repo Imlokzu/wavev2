@@ -4,12 +4,24 @@ import { MessageInput } from "@/features/chat/components/message-input";
 import { ChatPanels } from "@/features/chat/components/chat-panels";
 import { SettingsPanel } from "@/features/chat/components/settings-panel";
 import { useChatStore, makeConversation, type ChatMessage } from "@/store/chat-store";
-import { useRealtimeMessages, deleteSupabaseMessage, editSupabaseMessage, loadConversations } from "@/hooks/useRealtimeMessages";
+import { useRealtimeMessages, deleteSupabaseMessage } from "@/hooks/useRealtimeMessages";
 import { useAuthStore } from "@/store/auth-store";
 import { ProfileModal } from "@/components/ProfileModal";
 import { MarkdownText } from "@/components/MarkdownText";
 import { supabase } from "@/utils/supabase";
 import { usePresenceStore } from "@/hooks/usePresence";
+import { useSettings } from "@/store/settings-store";
+import { InviteModal } from "@/components/InviteModal";
+import { joinGroupByCode, loadConversations } from "@/hooks/useRealtimeMessages";
+
+type GroupMember = {
+  id: string;
+  name: string;
+  username: string;
+  bio: string | null;
+  avatarUrl: string | null;
+  role: "admin" | "member";
+};
 
 export function ChatPage() {
   const activeChat = useChatStore((s) => s.activeChat);
@@ -32,8 +44,15 @@ export function ChatPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [aboutMsg, setAboutMsg] = useState<ChatMessage | null>(null);
   const [profileUserId, setProfileUserId] = useState<string | null>(null);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [showRightPanel, setShowRightPanel] = useState(false);
+  const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const upsertConversation = useChatStore((s) => s.upsertConversation);
   const setActiveChat = useChatStore((s) => s.setActiveChat);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   // Request notification permission on first load
   useEffect(() => {
@@ -42,8 +61,21 @@ export function ChatPage() {
     }
   }, []);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!currentUser) return;
+    const params = new URLSearchParams(window.location.search);
+    const inviteCode = params.get("invite");
+    if (!inviteCode) return;
+
+    joinGroupByCode(currentUser.id, inviteCode).then(async (res) => {
+      if ("conversationId" in res) {
+        await loadConversations(currentUser.id);
+        setActiveChat(res.conversationId);
+      }
+      const nextUrl = `${window.location.pathname}${window.location.hash}`;
+      window.history.replaceState({}, "", nextUrl);
+    });
+  }, [currentUser?.id]);
 
   const scrollToMessage = (msgId: string) => {
     const el = document.getElementById(`msg-${msgId}`);
@@ -54,13 +86,14 @@ export function ChatPage() {
     }
   };
 
+  const showReadReceipts = useSettings((s) => s.showReadReceipts);
+
   const MessageTick = ({ msg }: { msg: ChatMessage }) => {
-    if (!msg.own) return null;
+    if (!msg.own || !showReadReceipts) return null;
     const conv = storeConversations.find(c => c.id === activeChat);
     const otherMemberCount = (conv?.memberCount ?? 2) - 1; // exclude sender
     const readCount = (msg.readBy ?? []).filter(id => id !== currentUser?.id).length;
     const allRead = otherMemberCount > 0 && readCount >= otherMemberCount;
-    const anyRead = readCount > 0;
 
     return (
       <svg width="14" height="8" viewBox="0 0 14 8" fill="none" className={allRead ? "text-[#7eb88a]" : "text-[#6b8299]/60"}>
@@ -116,6 +149,49 @@ export function ChatPage() {
 
   const chat = storeConversations.find((c) => c.id === activeChat);
 
+  useEffect(() => {
+    if (!chat?.isGroup || !activeChat) {
+      setGroupMembers([]);
+      return;
+    }
+    setMembersLoading(true);
+    supabase
+      .from("conversation_members")
+      .select("user_id, group_role, profiles!user_id(id, name, username, avatar_url, bio)")
+      .eq("conversation_id", activeChat)
+      .then(async ({ data, error }) => {
+        if (!error) {
+          const members = (data ?? []).map((row: any) => ({
+            id: row.profiles?.id ?? row.user_id,
+            name: row.profiles?.name ?? "Unknown",
+            username: row.profiles?.username ?? "unknown",
+            bio: row.profiles?.bio ?? null,
+            avatarUrl: row.profiles?.avatar_url ?? null,
+            role: row.group_role === "admin" ? "admin" : "member",
+          })) as GroupMember[];
+          setGroupMembers(members);
+          return;
+        }
+
+        // Backward compatibility for older schemas missing group_role.
+        const fallbackMembers = await supabase
+          .from("conversation_members")
+          .select("user_id, profiles!user_id(id, name, username, avatar_url, bio)")
+          .eq("conversation_id", activeChat);
+
+        const members = (fallbackMembers.data ?? []).map((row: any) => ({
+          id: row.profiles?.id ?? row.user_id,
+          name: row.profiles?.name ?? "Unknown",
+          username: row.profiles?.username ?? "unknown",
+          bio: row.profiles?.bio ?? null,
+          avatarUrl: row.profiles?.avatar_url ?? null,
+          role: "member" as const,
+        }));
+        setGroupMembers(members);
+      })
+      .finally(() => setMembersLoading(false));
+  }, [activeChat, chat?.isGroup]);
+
   // IntersectionObserver — mark messages as read when they scroll into view
   useEffect(() => {
     if (!activeChat || !currentUser) return;
@@ -155,7 +231,7 @@ export function ChatPage() {
     return () => observer.disconnect();
   }, [activeChat, currentUser?.id, sentMessages]);
 
-  const handleProfileDm = async (userId: string, name: string, username: string, avatarUrl: string | null) => {
+  const handleProfileDm = async (userId: string, name: string, _username: string, avatarUrl: string | null) => {
     if (!currentUser) return;
     const { data: myM } = await supabase.from("conversation_members").select("conversation_id").eq("user_id", currentUser.id);
     const myIds = (myM ?? []).map((r: any) => r.conversation_id);
@@ -170,6 +246,7 @@ export function ChatPage() {
       convId = conv.id;
       await supabase.from("conversation_members").insert([{ conversation_id: convId, user_id: currentUser.id }, { conversation_id: convId, user_id: userId }]);
     }
+    if (!convId) return;
     upsertConversation(makeConversation(convId, name, avatarUrl, userId));
     setActiveChat(convId);
     setProfileUserId(null);
@@ -190,11 +267,64 @@ export function ChatPage() {
 
   const closeSidebar = () => setSidebarOpen(false);
 
+  const scrollToBottom = (smooth = true) => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: smooth ? "smooth" : "auto" });
+  };
+
+  const handleMessagesScroll = () => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollToBottom(distanceFromBottom > 180);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (window.innerWidth >= 1024 || sidebarOpen) return;
+    const t = e.touches[0];
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (window.innerWidth >= 1024 || sidebarOpen) return;
+    if (!touchStartRef.current) return;
+    const start = touchStartRef.current;
+    const t = e.touches[0];
+    const dx = t.clientX - start.x;
+    const dy = Math.abs(t.clientY - start.y);
+    // Open only for intentional horizontal swipe from the left edge.
+    if (start.x <= 24 && dx > 60 && dy < 40) {
+      setSidebarOpen(true);
+      touchStartRef.current = null;
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchStartRef.current = null;
+  };
+
+  useEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distanceFromBottom < 120) scrollToBottom(false);
+  }, [activeChat, messages.length]);
+
+  useEffect(() => {
+    if (!activeChat && storeConversations.length > 0) {
+      setActiveChat(storeConversations[0].id);
+    }
+  }, [activeChat, storeConversations.length]);
+
   // Subscribe to real-time Supabase messages
   useRealtimeMessages(activeChat);
 
   return (
     <div className="flex h-screen w-screen bg-[#0e1621]">
+      {showInviteModal && chat?.isGroup && (
+        <InviteModal conversationId={chat.id} onClose={() => setShowInviteModal(false)} />
+      )}
       {profileUserId && (
         <ProfileModal
           userId={profileUserId}
@@ -210,7 +340,7 @@ export function ChatPage() {
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          className="fixed inset-0 z-[55] bg-black/50 lg:hidden"
           onClick={closeSidebar}
           role="presentation"
         />
@@ -218,7 +348,7 @@ export function ChatPage() {
 
       {/* Sidebar / Settings - Mobile */}
       <div
-        className={`fixed bottom-0 left-0 top-0 z-40 w-80 transform border-r border-[#1f2f3f] bg-[#17212b] transition-transform duration-300 lg:hidden ${
+        className={`fixed bottom-0 left-0 top-0 z-[60] w-80 transform border-r border-[#1f2f3f] bg-[#17212b] transition-transform duration-300 lg:hidden ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -228,9 +358,24 @@ export function ChatPage() {
           <Sidebar onClose={closeSidebar} />
         )}
       </div>
+      {!sidebarOpen && (
+        <div className="fixed inset-y-0 left-0 z-[45] w-4 lg:hidden">
+          <div
+            className="h-full w-full"
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+          />
+        </div>
+      )}
 
       {/* Chat area */}
-      <div className="flex min-w-0 flex-1 flex-col relative min-h-0">
+      <div
+        className="flex min-w-0 flex-1 flex-col relative min-h-0"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
         {activeChat ? (
           <>
             {/* Header */}
@@ -273,12 +418,21 @@ export function ChatPage() {
                 <span className="text-[#7eb88a]">typing...</span>
               ) : chat?.otherUserId && onlineIds.has(chat.otherUserId) ? (
                 <span className="text-[#7eb88a]">online</span>
-              ) : (
-                "last seen recently"
-              )}
+              ) : null}
             </p>
           </div>
           <div className="flex shrink-0 gap-1">
+            {chat?.isGroup && (
+              <button
+                onClick={() => setShowRightPanel((v) => !v)}
+                className={`flex h-8 items-center gap-1 rounded-lg px-2 transition hover:bg-[#1c2733] hover:text-white ${showRightPanel ? "bg-[#1c2733] text-white" : "text-[#6b8299]"}`}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M11 3a2.5 2.5 0 110 5 2.5 2.5 0 010-5zM5 3a2.5 2.5 0 110 5 2.5 2.5 0 010-5zM1.5 14c0-2 1.5-3.5 3.5-3.5h6c2 0 3.5 1.5 3.5 3.5" />
+                </svg>
+                <span className="text-[11px] font-medium">Members</span>
+              </button>
+            )}
             <button 
               onClick={() => setShowSearch(!showSearch)}
               className={`flex h-8 w-8 items-center justify-center rounded-lg transition hover:bg-[#1c2733] hover:text-white ${showSearch ? 'bg-[#1c2733] text-white' : 'text-[#6b8299]'}`}
@@ -317,7 +471,11 @@ export function ChatPage() {
         )}
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 md:px-4 min-h-0">
+        <div
+          ref={messagesContainerRef}
+          onScroll={handleMessagesScroll}
+          className="flex-1 overflow-y-auto px-3 py-4 md:px-4 min-h-0"
+        >
           <div className="mb-4 flex justify-center">
             <span className="rounded-xl bg-[#1c2733]/80 px-3 py-1 text-[10px] text-[#6b8299]">
               Today
@@ -333,14 +491,14 @@ export function ChatPage() {
                 id={`msg-${msg.id}`}
                 data-msg-id={msg.id}
                 data-sender-id={msg.own ? currentUser?.id ?? "" : "other"}
-                className={`flex animate-pop-in flex-col ${msg.own ? "items-end" : "items-start"} ${isFirst ? "mt-3" : "mt-1"}`}
+                className={`flex flex-col ${msg.own ? "items-end animate-message-send" : "items-start animate-message-receive"} ${isFirst ? "mt-3" : "mt-1"}`}
               >
                 <div
                   onContextMenu={(e) => handleContextMenu(e, msg.id, msg.own)}
-                  className={`relative max-w-[85%] sm:max-w-[70%] md:max-w-[60%] select-none flex flex-col`}
+                  className={`relative min-w-0 max-w-[85%] sm:max-w-[70%] md:max-w-[60%] select-none flex flex-col`}
                 >
                   <div className={`px-3 py-1.5 ${msg.own ? "rounded-2xl bg-[#1b3a2d]" : "rounded-2xl bg-[#1c2733]"}`}>
-                    {!msg.own && isFirst && (
+                    {!msg.own && (chat?.isGroup || isFirst) && (
                       <p className="mb-0.5 text-[11px] font-medium text-[#7eb88a]">{msg.sender}</p>
                     )}
 
@@ -363,8 +521,18 @@ export function ChatPage() {
 
                     <div className="flex flex-col gap-1">
                       {msg.type === "gif" || msg.type === "image" ? (
-                        <div className="rounded-xl overflow-hidden mt-1 mb-1 max-w-[200px]">
-                          <img src={msg.content} alt="Attachment" className="w-full object-cover" />
+                        <div className="block mt-1 mb-1">
+                          <img
+                            src={msg.content}
+                            alt="Attachment"
+                            className="block max-w-[240px] max-h-[240px] object-contain rounded-xl"
+                          />
+                          <div className="flex justify-end mt-1">
+                            <span className="flex shrink-0 items-center gap-0.5 text-[9px] text-[#6b8299]/50">
+                              {msg.time}
+                              <MessageTick msg={msg} />
+                            </span>
+                          </div>
                         </div>
                       ) : msg.type === "file" && msg.fileData ? (
                         <div className="flex items-center gap-3 min-w-[200px] bg-[#0e1621]/20 rounded-xl p-3 mt-1">
@@ -458,7 +626,7 @@ export function ChatPage() {
                           </div>
                         </div>
                       ) : (
-                        <div className="flex items-end gap-2">
+                        <div className="flex items-end gap-2" style={{ fontSize: "var(--wave-font-size)" }}>
                           <MarkdownText content={msg.content} onMentionClick={handleMentionClick} />
                           <span className="mb-0.5 flex shrink-0 items-center gap-0.5 text-[9px] text-[#6b8299]/50">
                             {msg.editedAt && <span className="italic">edited</span>}
@@ -468,7 +636,7 @@ export function ChatPage() {
                         </div>
                       )}
                       
-                      {(msg.type === "gif" || msg.type === "image" || msg.type === "poll") && (
+                      {msg.type === "poll" && (
                         <div className="flex justify-end w-full">
                           <span className="mb-0.5 flex shrink-0 items-center gap-0.5 text-[9px] text-[#6b8299]/50">
                             {msg.time}
@@ -571,7 +739,7 @@ export function ChatPage() {
         {/* About Message Modal */}
         {aboutMsg && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setAboutMsg(null)}>
-            <div className="bg-[#202b36] rounded-2xl p-5 w-72 shadow-xl ring-1 ring-white/5 animate-pop-in" onClick={e => e.stopPropagation()}>
+            <div className="bg-[#202b36] rounded-2xl p-5 w-72 shadow-xl ring-1 ring-white/5 animate-modal-open" onClick={e => e.stopPropagation()}>
               <h3 className="text-white font-semibold text-sm mb-4">Message Info</h3>
               <div className="space-y-3 text-[13px]">
                 <div className="flex justify-between">
@@ -644,9 +812,33 @@ export function ChatPage() {
 
         {/* Input */}
         <MessageInput />
+        {showScrollToBottom && (
+          <button
+            onClick={() => scrollToBottom()}
+            className="absolute bottom-20 right-4 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-[#2b5278] text-white shadow-lg ring-1 ring-white/10 transition hover:bg-[#356590]"
+            aria-label="Scroll to latest messages"
+            title="Go to latest"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6l5 5 5-5" />
+            </svg>
+          </button>
+        )}
         </>
       ) : (
-        <div className="flex flex-1 items-center justify-center bg-[#0e1621] text-[#4a6580] flex-col gap-4 animate-pop-in">
+        <div className="flex flex-1 items-center justify-center bg-[#0e1621] text-[#4a6580] flex-col gap-4 animate-fade-in relative">
+          <div className="absolute left-0 top-0 flex h-14 w-full items-center gap-2 border-b border-[#1f2f3f] px-3 lg:hidden">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-[#6b8299] transition hover:bg-[#1c2733] hover:text-white"
+              aria-label="Open chats sidebar"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M2 3h14M2 9h14M2 15h14" />
+              </svg>
+            </button>
+            <span className="text-sm font-medium text-white">Chats</span>
+          </div>
           <div className="w-20 h-20 rounded-full bg-[#1c2733] flex items-center justify-center">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
@@ -656,6 +848,156 @@ export function ChatPage() {
         </div>
       )}
       </div>
+      {activeChat && chat?.isGroup && showRightPanel && (
+        <aside className="hidden w-80 shrink-0 border-l border-[#1f2f3f] bg-[#17212b] lg:flex lg:flex-col">
+          <div className="flex h-14 items-center justify-between border-b border-[#1f2f3f] px-4">
+            <div>
+              <p className="text-sm font-semibold text-white">Group Members</p>
+              <p className="text-[10px] text-[#6b8299]">{groupMembers.filter((m) => onlineIds.has(m.id)).length} online</p>
+            </div>
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="rounded-lg border border-[#7eb88a]/30 px-2.5 py-1 text-[11px] font-medium text-[#7eb88a] transition hover:bg-[#7eb88a]/10"
+            >
+              Invite
+            </button>
+          </div>
+          <div className="border-b border-[#1f2f3f] px-4 py-3">
+            <p className="mb-2 text-[10px] uppercase tracking-wide text-[#6b8299]">Online now</p>
+            <div className="flex flex-wrap gap-2">
+              {groupMembers.filter((m) => onlineIds.has(m.id)).length > 0 ? (
+                groupMembers
+                  .filter((m) => onlineIds.has(m.id))
+                  .map((m) => (
+                    <span key={`online-${m.id}`} className="rounded-full bg-[#1b3a2d] px-2.5 py-1 text-[11px] text-[#7eb88a]">
+                      @{m.username}
+                    </span>
+                  ))
+              ) : (
+                <span className="text-[11px] text-[#4a6580]">No one online right now</span>
+              )}
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+            {membersLoading ? (
+              <div className="flex items-center justify-center py-6 text-[#6b8299] text-sm">Loading members...</div>
+            ) : (
+              groupMembers.map((m) => (
+                <div key={m.id} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-[#1c2733]">
+                  <button
+                    onClick={() => setProfileUserId(m.id)}
+                    className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                  >
+                    <div className="relative h-9 w-9 shrink-0">
+                      {m.avatarUrl ? (
+                        <img src={m.avatarUrl} alt={m.name} className="h-9 w-9 rounded-full object-cover" />
+                      ) : (
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#2b5278] text-xs font-bold text-white">
+                          {m.name[0]?.toUpperCase() ?? "?"}
+                        </div>
+                      )}
+                      {onlineIds.has(m.id) && (
+                        <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border border-[#17212b] bg-[#7eb88a]" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] text-white hover:text-[#7eb88a] transition">{m.name}</p>
+                      <p className="text-[10px] text-[#6b8299]">@{m.username}</p>
+                      {m.bio && <p className="truncate text-[10px] text-[#4a6580]">{m.bio}</p>}
+                    </div>
+                  </button>
+                  <span className={`rounded-md px-2 py-0.5 text-[10px] ${m.role === "admin" ? "bg-[#2b5278] text-white" : "bg-[#1f2f3f] text-[#6b8299]"}`}>
+                    {m.role}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+      )}
+      {activeChat && chat?.isGroup && showRightPanel && (
+        <div className="fixed inset-0 z-[70] bg-black/50 lg:hidden" onClick={() => setShowRightPanel(false)}>
+          <div
+            className="absolute bottom-0 left-0 right-0 max-h-[75vh] rounded-t-2xl border-t border-[#1f2f3f] bg-[#17212b] animate-slide-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex h-14 items-center justify-between border-b border-[#1f2f3f] px-4">
+              <div>
+                <p className="text-sm font-semibold text-white">Group Members</p>
+                <p className="text-[10px] text-[#6b8299]">{groupMembers.filter((m) => onlineIds.has(m.id)).length} online</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowInviteModal(true)}
+                  className="rounded-lg border border-[#7eb88a]/30 px-2.5 py-1 text-[11px] font-medium text-[#7eb88a] transition hover:bg-[#7eb88a]/10"
+                >
+                  Invite
+                </button>
+                <button onClick={() => setShowRightPanel(false)} className="text-[#6b8299] hover:text-white">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <path d="M3 3l8 8M11 3l-8 8" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div className="border-b border-[#1f2f3f] px-4 py-3">
+              <p className="mb-2 text-[10px] uppercase tracking-wide text-[#6b8299]">Online now</p>
+              <div className="flex flex-wrap gap-2">
+                {groupMembers.filter((m) => onlineIds.has(m.id)).length > 0 ? (
+                  groupMembers
+                    .filter((m) => onlineIds.has(m.id))
+                    .map((m) => (
+                      <button
+                        key={`m-online-${m.id}`}
+                        onClick={() => setProfileUserId(m.id)}
+                        className="rounded-full bg-[#1b3a2d] px-2.5 py-1 text-[11px] text-[#7eb88a]"
+                      >
+                        @{m.username}
+                      </button>
+                    ))
+                ) : (
+                  <span className="text-[11px] text-[#4a6580]">No one online right now</span>
+                )}
+              </div>
+            </div>
+            <div className="max-h-[45vh] overflow-y-auto px-2 py-2">
+              {membersLoading ? (
+                <div className="flex items-center justify-center py-6 text-[#6b8299] text-sm">Loading members...</div>
+              ) : (
+                groupMembers.map((m) => (
+                  <div key={`m-mobile-${m.id}`} className="flex items-center gap-3 rounded-xl px-3 py-2 hover:bg-[#1c2733]">
+                    <button
+                      onClick={() => setProfileUserId(m.id)}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <div className="relative h-9 w-9 shrink-0">
+                        {m.avatarUrl ? (
+                          <img src={m.avatarUrl} alt={m.name} className="h-9 w-9 rounded-full object-cover" />
+                        ) : (
+                          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#2b5278] text-xs font-bold text-white">
+                            {m.name[0]?.toUpperCase() ?? "?"}
+                          </div>
+                        )}
+                        {onlineIds.has(m.id) && (
+                          <span className="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border border-[#17212b] bg-[#7eb88a]" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13px] text-white">{m.name}</p>
+                        <p className="text-[10px] text-[#6b8299]">@{m.username}</p>
+                        {m.bio && <p className="truncate text-[10px] text-[#4a6580]">{m.bio}</p>}
+                      </div>
+                    </button>
+                    <span className={`rounded-md px-2 py-0.5 text-[10px] ${m.role === "admin" ? "bg-[#2b5278] text-white" : "bg-[#1f2f3f] text-[#6b8299]"}`}>
+                      {m.role}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

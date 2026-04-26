@@ -2,11 +2,38 @@ import { useEffect, useRef } from "react";
 import { supabase } from "@/utils/supabase";
 import { useChatStore, makeConversation } from "@/store/chat-store";
 import { useAuthStore } from "@/store/auth-store";
+import { useSettings } from "@/store/settings-store";
 import type { ChatMessage } from "@/store/chat-store";
+import * as Signal from '@/utils/signal-protocol';
 
 const isSupabaseConfigured =
   import.meta.env.VITE_SUPABASE_URL &&
   import.meta.env.VITE_SUPABASE_URL !== "https://placeholder.supabase.co";
+
+function isMissingColumnError(error: any, column: string) {
+  const msg = String(error?.message ?? "").toLowerCase();
+  return error?.code === "PGRST204" && msg.includes(column.toLowerCase());
+}
+
+async function insertConversationMember(
+  conversationId: string,
+  userId: string,
+  groupRole: "admin" | "member"
+) {
+  const withRole = await supabase.from("conversation_members").insert({
+    conversation_id: conversationId,
+    user_id: userId,
+    group_role: groupRole,
+  });
+
+  if (!withRole.error) return withRole;
+  if (!isMissingColumnError(withRole.error, "group_role")) return withRole;
+
+  return supabase.from("conversation_members").insert({
+    conversation_id: conversationId,
+    user_id: userId,
+  });
+}
 
 async function markSingleMessageRead(messageId: string, userId: string, conversationId: string) {
   const { data } = await supabase.from("messages").select("read_by").eq("id", messageId).maybeSingle();
@@ -77,7 +104,56 @@ export async function loadConversations(userId: string) {
           return c;
         }
       }
-      return makeConversation(conv.id, conv.name ?? "Group", null);
+      if (conv.is_group) {
+        const { count } = await supabase
+          .from('conversation_members')
+          .select('*', { count: 'exact', head: true })
+          .eq('conversation_id', conv.id);
+
+        const { data: myMembership, error: myMembershipError } = await supabase
+          .from('conversation_members')
+          .select('group_role')
+          .eq('conversation_id', conv.id)
+          .eq('user_id', userId)
+          .maybeSingle();
+
+        const { data: convDetails, error: convDetailsError } = await supabase
+          .from('conversations')
+          .select('avatar_url, invite_code')
+          .eq('id', conv.id)
+          .maybeSingle();
+
+        let safeInviteCode: string | undefined = convDetails?.invite_code ?? undefined;
+        let safeRole: "admin" | "member" = (myMembership?.group_role as "admin" | "member") ?? "member";
+
+        if (myMembershipError && isMissingColumnError(myMembershipError, "group_role")) {
+          safeRole = "member";
+        }
+        if (convDetailsError && isMissingColumnError(convDetailsError, "invite_code")) {
+          safeInviteCode = undefined;
+        }
+
+        const c = makeConversation(conv.id, conv.name ?? 'Group', convDetails?.avatar_url ?? null, undefined, count ?? 0, true);
+        c.inviteCode = safeInviteCode;
+        c.groupRole = safeRole;
+
+        // Get last message
+        const { data: lastMsg } = await supabase
+          .from('messages')
+          .select('content, created_at, type')
+          .eq('conversation_id', conv.id)
+          .eq('deleted', false)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (lastMsg) {
+          c.lastMessage = lastMsg.type === 'text' ? lastMsg.content : `[${lastMsg.type}]`;
+          c.time = new Date(lastMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        return c;
+      }
+      return makeConversation(conv.id, conv.name ?? 'Group', null);
     })
   );
 
@@ -94,6 +170,7 @@ export function useRealtimeMessages(conversationId: string) {
   const markChatLoaded = useChatStore((s) => s.markChatLoaded);
   const loadedChats = useChatStore((s) => s.loadedChats);
   const user = useAuthStore((s) => s.user);
+  const soundEnabled = useSettings((s) => s.soundEnabled);
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   // Load history once per chat + mark as read
@@ -167,6 +244,7 @@ export function useRealtimeMessages(conversationId: string) {
             reply_to: string | null;
             created_at: string;
             actions: any[] | null;
+            signal_type?: number | null;
           };
 
           // Fetch sender profile
@@ -199,25 +277,46 @@ export function useRealtimeMessages(conversationId: string) {
             replyTo: row.reply_to ?? undefined,
           };
 
+          // Decrypt if Signal-encrypted
+          if (row.signal_type != null && row.sender_id !== user.id) {
+            const plaintext = await Signal.decrypt(
+              { ciphertext: row.content, type: row.signal_type },
+              row.sender_id
+            );
+            msg.content = plaintext ?? '[Message could not be decrypted]';
+          }
+
           // Don't add messages sent by this user (already optimistically added)
           if (row.sender_id !== user.id) {
             addSupabaseMessage(conversationId, msg);
+            if (soundEnabled) {
+              const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3");
+              audio.volume = 0.4;
+              audio.play().catch(() => {});
+            }
             // Mark as read immediately if this chat is currently open
             if (useChatStore.getState().activeChat === conversationId) {
               markSingleMessageRead(row.id, user.id, conversationId);
               // Also trigger a full conversation read to catch any others
               markConversationRead(conversationId, user.id);
             }
-            // Push notification if tab not focused
-            if (document.hidden && Notification.permission === "granted") {
+            // Push notification when app is in background (tab hidden or unfocused)
+            if ((document.hidden || !document.hasFocus()) && Notification.permission === "granted") {
               const title = profile?.name ?? "New message";
               const body = row.type === "text" ? row.content : `Sent a ${row.type}`;
               if (navigator.serviceWorker?.controller) {
                 navigator.serviceWorker.ready.then((reg) => {
-                  reg.showNotification(title, { body, icon: "/favicon.ico", tag: row.id, renotify: true });
+                  reg.showNotification(title, {
+                    body,
+                    icon: "/favicon.ico",
+                    badge: "/favicon.ico",
+                    tag: row.id,
+                    renotify: true,
+                    requireInteraction: true,
+                  });
                 });
               } else {
-                new Notification(title, { body, icon: "/favicon.ico" });
+                new Notification(title, { body, icon: "/favicon.ico", tag: row.id });
               }
             }
           }
@@ -297,7 +396,7 @@ export async function loadMessages(conversationId: string, userId: string) {
 /**
  * Refresh read receipts for all messages in a conversation (called on focus).
  */
-export async function refreshReadReceipts(conversationId: string, userId: string) {
+export async function refreshReadReceipts(conversationId: string, _userId: string) {
   if (!isSupabaseConfigured) return;
 
   const { data } = await supabase
@@ -351,18 +450,36 @@ export async function sendSupabaseMessage(
 ): Promise<string | null> {
   if (!isSupabaseConfigured) return null;
 
+  // Attempt Signal encryption (falls back to plaintext if not initialized)
+  let content = msg.content;
+  let signalType: number | null = null;
+
+  if (msg.type === 'text') {
+    // Find the recipient ID for DMs
+    const conv = useChatStore.getState().conversations.find(c => c.id === conversationId);
+    const recipientId = conv?.otherUserId;
+    if (recipientId) {
+      const encrypted = await Signal.encrypt(msg.content, recipientId);
+      if (encrypted) {
+        content = encrypted.ciphertext;
+        signalType = encrypted.type;
+      }
+    }
+  }
+
   const { data, error } = await supabase
     .from("messages")
     .insert({
       conversation_id: conversationId,
       sender_id: senderId,
-      content: msg.content,
+      content,
       type: msg.type,
       reply_to: msg.replyTo ?? null,
       file_url: msg.fileData?.url ?? null,
       file_name: msg.fileData?.name ?? null,
       file_size: msg.fileData?.size ?? null,
       file_mime: msg.fileData?.mimeType ?? null,
+      ...(signalType !== null ? { signal_type: signalType } : {}),
     })
     .select("id")
     .maybeSingle();
@@ -405,4 +522,116 @@ export async function editSupabaseMessage(messageId: string, newContent: string)
     .from("messages")
     .update({ content: newContent, edited_at: new Date().toISOString() })
     .eq("id", messageId);
+}
+
+/**
+ * Generate a 6-character alphanumeric invite code.
+ */
+function generateInviteCode(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+    .map(b => chars[b % chars.length])
+    .join('');
+}
+
+/**
+ * Create a new group conversation.
+ */
+export async function createGroup(
+  userId: string,
+  name: string,
+  avatarUrl: string | null
+): Promise<string | null> {
+  if (!isSupabaseConfigured) return null;
+  const inviteCode = generateInviteCode();
+  const { data: conv, error } = await supabase
+    .from('conversations')
+    .insert({ name, is_group: true, created_by: userId })
+    .select('id')
+    .maybeSingle();
+  if (error || !conv) {
+    console.error('[Wave] Failed to create group conversation:', error?.message);
+    return null;
+  }
+
+  // Best-effort update for optional group metadata so group creation still
+  // succeeds even when these columns are not present in older DB schemas.
+  const metadataUpdate: Record<string, string> = { invite_code: inviteCode };
+  if (avatarUrl) metadataUpdate.avatar_url = avatarUrl;
+  const { error: metadataError } = await supabase
+    .from('conversations')
+    .update(metadataUpdate)
+    .eq('id', conv.id);
+  if (metadataError) {
+    console.warn('[Wave] Group metadata update skipped:', metadataError.message);
+  }
+
+  const memberInsert = await insertConversationMember(conv.id, userId, "admin");
+  if (memberInsert.error) {
+    console.error("[Wave] Failed to add creator as member:", memberInsert.error.message);
+    return null;
+  }
+  return conv.id;
+}
+
+/**
+ * Join a group by invite code.
+ */
+export async function joinGroupByCode(
+  userId: string,
+  code: string
+): Promise<{ conversationId: string } | { error: string }> {
+  if (!isSupabaseConfigured) return { error: 'Not configured' };
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('id')
+    .eq('invite_code', code)
+    .maybeSingle();
+  if (!conv) return { error: 'Invalid or expired invite code.' };
+  const { error } = await insertConversationMember(conv.id, userId, "member");
+  if (error && !error.message.includes('duplicate')) return { error: error.message };
+  return { conversationId: conv.id };
+}
+
+/**
+ * Add a member to a group by username.
+ */
+export async function addMemberByUsername(
+  conversationId: string,
+  username: string,
+  _actingUserId: string
+): Promise<{ error?: string }> {
+  if (!isSupabaseConfigured) return { error: 'Not configured' };
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('username', username)
+    .maybeSingle();
+  if (!profile) return { error: 'User not found.' };
+  const { error } = await insertConversationMember(conversationId, profile.id, "member");
+  if (error) {
+    if (error.message.includes('duplicate') || error.code === '23505') return {};
+    return { error: error.message };
+  }
+  return {};
+}
+
+/**
+ * Search profiles by username.
+ */
+export async function searchProfiles(
+  query: string
+): Promise<Array<{ id: string; name: string; username: string; avatarUrl: string | null }>> {
+  if (!isSupabaseConfigured) return [];
+  const { data } = await supabase
+    .from('profiles')
+    .select('id, name, username, avatar_url')
+    .ilike('username', `%${query}%`)
+    .limit(10);
+  return (data ?? []).map((p: any) => ({
+    id: p.id,
+    name: p.name,
+    username: p.username,
+    avatarUrl: p.avatar_url,
+  }));
 }

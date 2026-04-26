@@ -11,14 +11,17 @@ export function MessageInput() {
   const [selectionToolbar, setSelectionToolbar] = useState<{ x: number; y: number } | null>(null);
   const [mentionResults, setMentionResults] = useState<{ id: string; name: string; username: string }[]>([]);
   const [showMention, setShowMention] = useState(false);
+  const [sendMenuPos, setSendMenuPos] = useState<{ x: number; y: number } | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const sendButtonRef = useRef<HTMLButtonElement | null>(null);
+  const suppressNextSendRef = useRef(false);
 
   const activeChat = useChatStore((s) => s.activeChat);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const editMessage = useChatStore((s) => s.editMessage);
-  const setTypingStatus = useChatStore((s) => s.setTypingStatus);
   const replyingTo = useChatStore((s) => s.replyingTo);
   const setReplyingTo = useChatStore((s) => s.setReplyingTo);
   const editingId = useChatStore((s) => s.editingId);
@@ -136,6 +139,31 @@ export function MessageInput() {
   const allMessages = [...(demoMessages[activeChat] ?? []), ...(sentMessages[activeChat] ?? [])];
   const replyingToMsg = allMessages.find((m) => m.id === replyingTo);
 
+  const openSendMenu = (x: number, y: number) => {
+    if (editingId) return;
+    setSendMenuPos({ x, y });
+  };
+
+  const closeSendMenu = () => setSendMenuPos(null);
+
+  const handleSendButtonTouchStart = () => {
+    if (editingId) return;
+    if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
+    longPressTimerRef.current = window.setTimeout(() => {
+      const rect = sendButtonRef.current?.getBoundingClientRect();
+      if (rect) openSendMenu(rect.left + rect.width / 2, rect.top - 8);
+      suppressNextSendRef.current = true;
+      longPressTimerRef.current = null;
+    }, 550);
+  };
+
+  const handleSendButtonTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
   return (
     <div className="shrink-0 bg-[#17212b] border-t border-[#1f2f3f] relative">
       {/* Reply banner */}
@@ -191,7 +219,7 @@ export function MessageInput() {
           </>
         )}
 
-        <div className="flex items-end gap-2 relative z-50">
+        <div className="flex items-end gap-2 relative z-20">
           {/* Selection formatting toolbar */}
           {selectionToolbar && (
             <div className="fixed z-[60] flex items-center gap-1 bg-[#202b36] rounded-xl px-2 py-1.5 shadow-xl ring-1 ring-white/10 animate-pop-in"
@@ -218,6 +246,41 @@ export function MessageInput() {
             </div>
           )}
 
+          {/* Send actions menu */}
+          {sendMenuPos && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={closeSendMenu} />
+              <div
+                className="fixed z-50 w-40 rounded-xl bg-[#202b36] p-1.5 shadow-xl ring-1 ring-white/10 animate-pop-in"
+                style={{
+                  left: Math.max(8, Math.min(sendMenuPos.x - 70, window.innerWidth - 168)),
+                  top: Math.max(8, sendMenuPos.y - 84),
+                }}
+              >
+                <button
+                  onClick={() => {
+                    closeSendMenu();
+                    handleSend();
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-white transition hover:bg-[#2b5278]"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="#7eb88a"><path d="M2 8l12-5-5 12-2-5-5-2z" stroke="#7eb88a" strokeWidth="1.1" strokeLinejoin="round"/></svg>
+                  Send now
+                </button>
+                <button
+                  onClick={() => {
+                    closeSendMenu();
+                    setActivePanelType("scheduler");
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-white transition hover:bg-[#2b5278]"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7eb88a" strokeWidth="1.5" strokeLinecap="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 1v2M11 1v2M2 6h12M8 9v2M8 9h2"/></svg>
+                  Schedule
+                </button>
+              </div>
+            </>
+          )}
+
           <button onClick={() => setShowAttachMenu(!showAttachMenu)} disabled={uploading || !!editingId}
             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-30 ${showAttachMenu ? "bg-[#202b36] text-white" : "text-[#4a6580] hover:bg-[#1c2733] hover:text-[#6b8299]"}`}>
             {uploading
@@ -227,16 +290,28 @@ export function MessageInput() {
 
           <textarea ref={textareaRef} value={text} onChange={handleTextChange} onSelect={handleSelect} onKeyDown={handleKeyDown}
             placeholder={editingId ? "Edit message..." : "Message"} disabled={uploading} rows={1}
-            style={{ maxHeight: "100px" }}
-            className={`flex-1 resize-none rounded-xl px-4 py-2.5 text-[13px] text-white placeholder-[#4a6580] outline-none transition focus:ring-1 disabled:opacity-50 ${editingId ? "bg-[#1b3a2d] focus:ring-[#6da879]/30" : "bg-[#1c2733] focus:ring-[#7eb88a]/30"}`}
+            style={{ maxHeight: "100px", fontSize: "var(--font-size-base)" }}
+            className={`flex-1 resize-none rounded-xl px-4 py-2.5 text-white placeholder-[#4a6580] outline-none transition focus:ring-1 disabled:opacity-50 ${editingId ? "bg-[#1b3a2d] focus:ring-[#6da879]/30" : "bg-[#1c2733] focus:ring-[#7eb88a]/30"}`}
           />
 
-          <button onClick={() => setActivePanelType(showScheduler ? null : "scheduler")} disabled={!!editingId} title="Schedule"
-            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-30 ${showScheduler ? "bg-[#2b5278] text-white" : "text-[#4a6580] hover:bg-[#1c2733] hover:text-[#6b8299]"}`}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><rect x="2" y="2" width="12" height="12" rx="2"/><path d="M5 1v2M11 1v2M2 6h12M8 9v2M8 9h2"/></svg>
-          </button>
-
-          <button onClick={handleSend} disabled={!text.trim() || uploading}
+          <button
+            ref={sendButtonRef}
+            onClick={() => {
+              if (suppressNextSendRef.current) {
+                suppressNextSendRef.current = false;
+                return;
+              }
+              handleSend();
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              openSendMenu(e.clientX, e.clientY);
+            }}
+            onTouchStart={handleSendButtonTouchStart}
+            onTouchEnd={handleSendButtonTouchEnd}
+            onTouchCancel={handleSendButtonTouchEnd}
+            disabled={!text.trim() || uploading}
+            title={editingId ? "Save" : "Send (right-click/long-press for schedule)"}
             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition disabled:opacity-40 ${editingId ? "bg-[#6da879] hover:bg-[#5c9a6a]" : "bg-[#7eb88a] hover:bg-[#6da879]"}`}>
             {editingId
               ? <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#0e1621" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8l3 3 7-7"/></svg>

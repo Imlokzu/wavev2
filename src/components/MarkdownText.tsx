@@ -1,9 +1,17 @@
 import { useMemo } from "react";
 import { marked, type MarkedOptions } from "marked";
-import { useAuthStore } from "@/store/auth-store";
+import DOMPurify from "dompurify";
 
-const renderer = new marked.Renderer();
 const markedOpts: MarkedOptions = { breaks: true, async: false };
+
+function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 interface Props {
   content: string;
@@ -11,15 +19,13 @@ interface Props {
 }
 
 export function MarkdownText({ content, onMentionClick }: Props) {
-  const currentUser = useAuthStore((s) => s.user);
-
   const html = useMemo(() => {
     // Spoiler: ||text|| → <span class="spoiler">text</span>
-    let processed = content.replace(/\|\|(.+?)\|\|/g, '<span class="spoiler">$1</span>');
+    let processed = content.replace(/\|\|(.+?)\|\|/g, (_, text) => `<span class="spoiler">${escapeHtml(text)}</span>`);
     // @mention → clickable
-    processed = processed.replace(/@(\w+)/g, '<button class="mention" data-username="$1">@$1</button>');
-    // Use sync parse
-    return marked.parse(processed, { ...markedOpts }) as string;
+    processed = processed.replace(/@(\w+)/g, (_, username) => `<button class="mention" data-username="${escapeHtml(username)}">@${escapeHtml(username)}</button>`);
+    // Use sync parse and sanitize
+    return DOMPurify.sanitize(marked.parse(processed, { ...markedOpts }) as string);
   }, [content]);
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -31,7 +37,7 @@ export function MarkdownText({ content, onMentionClick }: Props) {
 
   return (
     <div
-      className="markdown-body text-[13px] leading-relaxed text-[#e8e8e8] break-words"
+      className="markdown-body min-w-0 max-w-full text-[13px] leading-relaxed text-[#e8e8e8]"
       dangerouslySetInnerHTML={{ __html: html }}
       onClick={handleClick}
     />
