@@ -1,0 +1,96 @@
+{
+  "common": {
+    "message": "Message",
+    "send": "Send",
+    "settings": "Settings",
+    "signOut": "Sign Out",
+    "back": "Back",
+    "close": "Close",
+    "search": "Search",
+    "save": "Save",
+    "cancel": "Cancel"
+  },
+  "auth": {
+    "wave": "Wave 2.0",
+    "enterEmail": "Enter your email to sign in",
+    "emailPlaceholder": "you@example.com",
+    "sendCode": "We'll send a verification code to your email",
+    "continue": "Continue",
+    "invalidEmail": "Enter a valid email address",
+    "enterCode": "Enter the 5-digit code",
+    "verify": "Verify",
+    "enterDigits": "Enter all 5 digits",
+    "resend": "Resend",
+    "didntGetCode": "Didn't get the code?",
+    "yourProfile": "Your Profile",
+    "addPhotoName": "Add a photo and your name",
+    "firstName": "First name",
+    "lastName": "Last name (optional)",
+    "uploadPhoto": "Upload photo",
+    "changePhoto": "Change photo",
+    "startMessaging": "Start Messaging"
+  },
+  "chat": {
+    "chats": "Chats",
+    "today": "Today",
+    "online": "online",
+    "lastSeenRecently": "last seen recently",
+    "newChat": "New chat",
+    "attachments": "Attachments",
+    "photo": "Photo",
+    "file": "File",
+    "location": "Location",
+    "contact": "Contact",
+    "noConversations": "No conversations found",
+    "addEmoji": "Add emoji",
+    "attachFile": "Attach file",
+    "notifications": "Notifications",
+    "privacySecurity": "Privacy & Security",
+    "chatSettings": "Chat Settings",
+    "appearance": "Appearance",
+    "language": "Language"
+  },
+  "settings": {
+    "notifications": {
+      "title": "Notifications",
+      "enableNotifications": "Enable Notifications",
+      "soundEnabled": "Sound Enabled",
+      "vibrationEnabled": "Vibration Enabled",
+      "desktopNotifications": "Desktop Notifications"
+    },
+    "privacy": {
+      "title": "Privacy & Security",
+      "lastSeen": "Last Seen",
+      "readReceipts": "Read Receipts",
+      "blockList": "Block List",
+      "twoFactor": "Two-Factor Authentication"
+    },
+    "chat": {
+      "title": "Chat Settings",
+      "autoDownload": "Auto-Download Media",
+      "messagePreview": "Show Message Preview",
+      "deleteMessages": "Delete Messages",
+      "archiveChats": "Archive Chats"
+    },
+    "appearance": {
+      "title": "Appearance",
+      "theme": "Theme",
+      "dark": "Dark",
+      "light": "Light",
+      "fontSize": "Font Size",
+      "compact": "Compact",
+      "normal": "Normal",
+      "large": "Large"
+    },
+    "language": {
+      "title": "Language",
+      "selectLanguage": "Select Language",
+      "english": "English",
+      "spanish": "Spanish",
+      "french": "French",
+      "german": "German",
+      "chinese": "Chinese",
+      "arabic": "Arabic"
+    }
+  }
+}
