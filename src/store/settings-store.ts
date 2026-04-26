@@ -8,6 +8,8 @@ export interface UserSettings {
   showReadReceipts: boolean;
   language: string;
   bio: string;
+  fontSize: "compact" | "normal" | "large";
+  profileVisibility: "everyone" | "contacts";
 }
 
 interface SettingsState extends UserSettings {
@@ -25,6 +27,8 @@ const defaults: UserSettings = {
   showReadReceipts: true,
   language: "English",
   bio: "",
+  fontSize: "normal",
+  profileVisibility: "everyone",
 };
 
 export const useSettings = create<SettingsState>((set, get) => ({
@@ -50,6 +54,8 @@ export const useSettings = create<SettingsState>((set, get) => ({
         showReadReceipts: data.show_read_receipts ?? true,
         language: data.language ?? "English",
         bio: data.bio ?? "",
+        fontSize: data.font_size ?? "normal",
+        profileVisibility: data.profile_visibility ?? "everyone",
         loaded: true,
         loading: false,
       });
@@ -79,5 +85,7 @@ function toRow(s: Partial<UserSettings>) {
     show_read_receipts: s.showReadReceipts,
     language: s.language,
     bio: s.bio,
+    font_size: s.fontSize,
+    profile_visibility: s.profileVisibility,
   };
 }

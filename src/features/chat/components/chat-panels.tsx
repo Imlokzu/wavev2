@@ -81,7 +81,7 @@ export function ChatPanels() {
   return (
     <>
       {activePanelType === "gif" && (
-        <div className="bg-[#202b36] border-t border-[#1f2f3f] flex flex-col shrink-0" style={{ height: "280px" }}>
+        <div className="relative z-20 bg-[#202b36] border-t border-[#1f2f3f] flex flex-col shrink-0 animate-slide-up" style={{ height: "280px" }}>
           <div className="flex flex-col p-3 border-b border-[#1f2f3f] gap-2 shrink-0">
             <div className="flex items-center justify-between">
               <h3 className="text-white text-sm font-medium">GIFs · Tenor</h3>
@@ -94,7 +94,7 @@ export function ChatPanels() {
               <input type="text" value={gifSearchInput} onChange={(e) => { setGifSearchInput(e.target.value); clearTimeout((window as any)._gifTimer); (window as any)._gifTimer = setTimeout(() => setGifSearch(e.target.value), 400); }} placeholder="Search Tenor..." className="w-full bg-[#1c2733] text-[13px] text-white rounded-xl pl-9 pr-3 py-1.5 outline-none focus:ring-1 focus:ring-[#7eb88a]/50" autoFocus />
             </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-2 grid grid-cols-3 gap-2">
+          <div className="flex-1 overflow-y-auto p-2 grid grid-cols-3 gap-2 items-start min-h-0">
             {gifLoading ? (
               <div className="col-span-3 flex items-center justify-center py-6 text-[#6b8299]">
                 <svg className="animate-spin mr-2" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6" /><path d="M8 2a6 6 0 010 12" strokeLinecap="round" /></svg>
@@ -112,7 +112,7 @@ export function ChatPanels() {
       )}
 
       {activePanelType === "poll" && (
-        <div className="bg-[#202b36] border-t border-[#1f2f3f] shrink-0">
+        <div className="bg-[#202b36] border-t border-[#1f2f3f] shrink-0 animate-slide-up">
           <div className="flex items-center justify-between p-4 border-b border-[#1f2f3f]">
             <h3 className="text-white text-sm font-medium">Create a Poll</h3>
             <button onClick={() => setActivePanelType(null)} className="text-[#6b8299] hover:text-white transition"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4.5 4.5l9 9M13.5 4.5l-9 9" /></svg></button>
@@ -134,7 +134,7 @@ export function ChatPanels() {
       )}
 
       {activePanelType === "scheduler" && (
-        <div className="bg-[#202b36] border-t border-[#1f2f3f] shrink-0">
+        <div className="bg-[#202b36] border-t border-[#1f2f3f] shrink-0 animate-slide-up">
           <div className="flex items-center justify-between px-4 py-3 border-b border-[#1f2f3f]">
             <h3 className="text-white text-sm font-medium flex items-center gap-2">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#7eb88a" strokeWidth="1.5" strokeLinecap="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M5 1v3M11 1v3M2 7h12"/></svg>

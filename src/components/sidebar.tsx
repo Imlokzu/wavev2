@@ -6,6 +6,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { makeConversation } from "@/store/chat-store";
 import { loadConversations } from "@/hooks/useRealtimeMessages";
 import { usePresenceStore } from "@/hooks/usePresence";
+import { CreateGroupModal } from "@/components/CreateGroupModal";
 
 /* ── New Chat Modal ─────────────────────────────────── */
 
@@ -123,6 +124,7 @@ function NewChatModal({ onClose, onStartChat, starting, startError }: { onClose:
 export function Sidebar({ onClose }: { onClose?: () => void }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showNewChat, setShowNewChat] = useState(false);
+  const [showNewGroup, setShowNewGroup] = useState(false);
   const [startingChat, setStartingChat] = useState(false);
   const [startChatError, setStartChatError] = useState("");
   const activeChat = useChatStore((s) => s.activeChat);
@@ -199,10 +201,10 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
         if (memberErr) { setStartChatError(memberErr.message); return; }
       }
 
-      upsertConversation(makeConversation(conversationId, name, avatarUrl, userId));
+      upsertConversation(makeConversation(conversationId!, name, avatarUrl, userId));
       setShowNewChat(false);
       setStartChatError("");
-      setActiveChat(conversationId);
+      setActiveChat(conversationId!);
       onClose?.();
     } catch (err: any) {
       setStartChatError(err?.message ?? "Unexpected error");
@@ -221,6 +223,7 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
           startError={startChatError}
         />
       )}
+      {showNewGroup && <CreateGroupModal onClose={() => setShowNewGroup(false)} />}
 
       <div className="flex h-full flex-col">
         {/* Header */}
@@ -235,15 +238,27 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
             </svg>
           </button>
           <span className="text-sm font-semibold text-white">Chats</span>
-          <button
-            onClick={() => setShowNewChat(true)}
-            className="flex h-9 w-9 items-center justify-center rounded-lg text-[#6b8299] transition hover:bg-[#202b36] hover:text-white"
-            aria-label="New chat"
-          >
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-              <path d="M9 1v16M1 9h16" />
-            </svg>
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setShowNewGroup(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[#6b8299] transition hover:bg-[#202b36] hover:text-white"
+              aria-label="New group"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M12 2a3 3 0 110 6 3 3 0 010-6zM6 2a3 3 0 110 6 3 3 0 010-6zM1 16c0-3 2-5 5-5h6c3 0 5 2 5 5"/>
+                <path d="M15 10v4M13 12h4"/>
+              </svg>
+            </button>
+            <button
+              onClick={() => setShowNewChat(true)}
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-[#6b8299] transition hover:bg-[#202b36] hover:text-white"
+              aria-label="New chat"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M9 1v16M1 9h16" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Search */}
@@ -271,14 +286,15 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
               <button
                 key={conv.id}
                 onClick={() => handleChatSelect(conv.id)}
-                className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition ${
+                className={`conversation-item flex w-full items-center gap-3 px-3 py-2.5 text-left ${
                   activeChat === conv.id ? "bg-[#2b5278]" : "hover:bg-[#202b36]"
                 }`}
                 aria-pressed={activeChat === conv.id}
+                style={{ fontSize: "var(--font-size-base)" }}
               >
                 <div className="relative shrink-0">
                   <div
-                    className="flex h-11 w-11 items-center justify-center rounded-full text-xs font-bold text-white overflow-hidden"
+                    className={`flex h-11 w-11 items-center justify-center ${conv.isGroup ? "rounded-xl" : "rounded-full"} text-xs font-bold text-white overflow-hidden`}
                     style={{ backgroundColor: conv.color }}
                   >
                     {conv.avatarUrl
@@ -312,7 +328,9 @@ export function Sidebar({ onClose }: { onClose?: () => void }) {
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate text-[11px] text-[#6b8299]">{conv.lastMessage}</span>
+                    <span className="truncate text-[11px] text-[#6b8299]">
+                      {conv.isGroup ? `${conv.memberCount ?? 0} members` : conv.lastMessage}
+                    </span>
                     {conv.unread > 0 && (
                       <span className="flex h-4.5 min-w-[18px] shrink-0 items-center justify-center rounded-full bg-[#7eb88a] px-1 text-[9px] font-bold text-[#0e1621]" aria-label={`${conv.unread} unread messages`}>
                         {conv.unread}

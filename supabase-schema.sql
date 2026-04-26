@@ -56,6 +56,19 @@ create table if not exists public.reactions (
   primary key (message_id, user_id, emoji)
 );
 
+-- 6. SESSIONS
+create table if not exists public.sessions (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid references auth.users(id) on delete cascade not null,
+  device_name text not null,
+  browser     text,
+  os          text,
+  ip          text,
+  fingerprint text,
+  last_active timestamptz default now() not null,
+  created_at  timestamptz default now() not null
+);
+
 -- ────────────────────────────────────────────────────────────
 -- ENABLE RLS
 -- ────────────────────────────────────────────────────────────
@@ -64,6 +77,7 @@ alter table public.conversations enable row level security;
 alter table public.conversation_members enable row level security;
 alter table public.messages enable row level security;
 alter table public.reactions enable row level security;
+alter table public.sessions enable row level security;
 
 -- ────────────────────────────────────────────────────────────
 -- POLICIES
@@ -86,7 +100,14 @@ create policy "Members can view other members" on public.conversation_members fo
     where cm2.conversation_id = conversation_members.conversation_id and cm2.user_id = auth.uid()
   )
 );
-create policy "Users can join conversations" on public.conversation_members for insert with check (user_id = auth.uid());
+create policy "Users can join conversations they created or were invited to"
+on public.conversation_members for insert
+with check (
+  user_id = auth.uid() and (
+    exists (select 1 from public.conversations where id = conversation_id and created_by = auth.uid())
+    or exists (select 1 from public.conversation_members where conversation_id = conversation_members.conversation_id and user_id = auth.uid())
+  )
+);
 
 -- Messages
 create policy "Members can read messages" on public.messages for select using (
@@ -102,14 +123,25 @@ create policy "Anyone in conversation can see reactions" on public.reactions for
 create policy "Users can add/remove own reactions" on public.reactions for insert with check (user_id = auth.uid());
 create policy "Users can delete own reactions" on public.reactions for delete using (user_id = auth.uid());
 
+-- Sessions
+create policy "Users can manage own sessions" on public.sessions for all using (auth.uid() = user_id);
+
 -- ────────────────────────────────────────────────────────────
 -- STORAGE BUCKET
 -- ────────────────────────────────────────────────────────────
 insert into storage.buckets (id, name, public) values ('avatars', 'avatars', true) on conflict (id) do nothing;
 
 create policy "Anyone can view avatars" on storage.objects for select using (bucket_id = 'avatars');
-create policy "Authenticated users can upload avatars" on storage.objects for insert with check (bucket_id = 'avatars' and auth.role() = 'authenticated');
-create policy "Users can update own avatar" on storage.objects for update using (bucket_id = 'avatars' and auth.uid()::text = (storage.foldername(name))[1]);
+create policy "Authenticated users can upload avatars" on storage.objects
+for insert with check (
+  bucket_id = 'avatars'
+  and auth.role() = 'authenticated'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+create policy "Users can update own avatar" on storage.objects
+for update using (
+  bucket_id = 'avatars' and auth.uid()::text = (storage.foldername(name))[1]
+);
 
 -- ────────────────────────────────────────────────────────────
 -- REALTIME
@@ -120,3 +152,39 @@ begin;
 commit;
 alter publication supabase_realtime add table public.messages;
 alter publication supabase_realtime add table public.reactions;
+
+-- Feature: Group Chats schema additions
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS invite_code TEXT UNIQUE;
+ALTER TABLE public.conversations ADD COLUMN IF NOT EXISTS avatar_url TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_conversations_invite_code
+  ON public.conversations (invite_code)
+  WHERE invite_code IS NOT NULL;
+
+ALTER TABLE public.conversation_members
+  ADD COLUMN IF NOT EXISTS group_role TEXT NOT NULL DEFAULT 'member'
+  CHECK (group_role IN ('admin', 'member'));
+
+-- Feature: Signal Protocol schema additions
+CREATE TABLE IF NOT EXISTS public.signal_keys (
+  user_id         UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+  identity_key    TEXT NOT NULL,
+  signed_pre_key  JSONB NOT NULL,
+  one_time_keys   JSONB NOT NULL,
+  registration_id INTEGER NOT NULL,
+  updated_at      TIMESTAMPTZ DEFAULT NOW() NOT NULL
+);
+
+ALTER TABLE public.signal_keys ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can read any public key bundle"
+  ON public.signal_keys FOR SELECT USING (true);
+
+CREATE POLICY "Users can upsert own key bundle"
+  ON public.signal_keys FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own key bundle"
+  ON public.signal_keys FOR UPDATE USING (auth.uid() = user_id);
+
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS signal_type INTEGER;
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS read_by TEXT[] DEFAULT '{}';

@@ -6,13 +6,13 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { useScheduledMessages } from "@/hooks/useScheduledMessages";
 import { usePresence } from "@/hooks/usePresence";
 import { useSettings } from "@/store/settings-store";
-import { registerSession } from "@/utils/sessions";
 
 export default function App() {
   const authStep = useAuthStore((s) => s.authStep);
   const user = useAuthStore((s) => s.user);
   const initialize = useAuthStore((s) => s.initialize);
   const loadSettings = useSettings((s) => s.load);
+  const fontSize = useSettings((s) => s.fontSize);
 
   useScheduledMessages();
   usePresence();
@@ -21,12 +21,17 @@ export default function App() {
     initialize();
   }, [initialize]);
 
-  // Load settings + register session when user logs in
+  // Load settings when user logs in
   useEffect(() => {
     if (!user) return;
     loadSettings(user.id);
-    registerSession(user.id);
   }, [user?.id]);
+
+  // Sync font-size CSS custom property
+  useEffect(() => {
+    const sizes = { compact: "13px", normal: "14px", large: "16px" };
+    document.documentElement.style.setProperty("--font-size-base", sizes[fontSize]);
+  }, [fontSize]);
 
   if (authStep !== "done" || !user) {
     return <AuthFlow />;

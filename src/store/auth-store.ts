@@ -2,8 +2,11 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { supabase } from "@/utils/supabase";
 import { sendWelcomeMessage, sendOtpNotification } from "@/utils/wave-bot";
+import { registerSession, clearSession } from "@/utils/sessions";
+import { validatePassword } from "@/utils/validation";
 
-export type AuthStep = "email" | "otp" | "profile" | "done";
+export type AuthStep = "email" | "otp" | "profile" | "forgot-password" | "reset-password" | "done";
+export type AuthMode = "login-password" | "login-otp" | "signup";
 
 export interface User {
   id: string;
@@ -16,6 +19,7 @@ export interface User {
 interface AuthState {
   user: User | null;
   authStep: AuthStep;
+  authMode: AuthMode;
   email: string;
   otpError: string | null;
   loading: boolean;
@@ -27,6 +31,11 @@ interface AuthState {
   saveProfile: (name: string, username: string, avatarUrl: string | null) => Promise<void>;
   setAuthStep: (step: AuthStep) => void;
   setEmail: (email: string) => void;
+  setAuthMode: (mode: AuthMode) => void;
+  signUp: (email: string, password: string) => Promise<void>;
+  signInWithPassword: (email: string, password: string) => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<void>;
+  updatePassword: (newPassword: string) => Promise<void>;
   initialize: () => void;
 }
 
@@ -39,6 +48,7 @@ export const useAuthStore = create<AuthState>()(
     (set, get) => ({
       user: null,
       authStep: "email",
+      authMode: "login-password",
       email: "",
       otpError: null,
       loading: false,
@@ -46,7 +56,11 @@ export const useAuthStore = create<AuthState>()(
       setUser: (user) => set({ user, authStep: "done" }),
       setAuthStep: (authStep) => set({ authStep }),
       setEmail: (email) => set({ email }),
-      initialize: () => {},
+      setAuthMode: (authMode) => set({ authMode }),
+      initialize: () => {
+        if (!isSupabaseConfigured) return;
+        supabase.auth.getSession().catch(() => {});
+      },
 
       sendCodeViaBot: async () => {
         const { email } = get();
@@ -55,8 +69,125 @@ export const useAuthStore = create<AuthState>()(
       },
 
       signOut: async () => {
+        clearSession();
         if (isSupabaseConfigured) await supabase.auth.signOut();
-        set({ user: null, authStep: "email", email: "", otpError: null, loading: false });
+        set({ user: null, authStep: "email", authMode: "login-password", email: "", otpError: null, loading: false });
+      },
+
+      signUp: async (email, password) => {
+        if (!email?.trim()) {
+          set({ otpError: "Please enter your email address.", authStep: "email" });
+          return;
+        }
+        if (!password) {
+          set({ otpError: "Please enter a password.", authStep: "email" });
+          return;
+        }
+        // Validate password strength before hitting Supabase
+        const passwordValidation = validatePassword(password);
+        if (!passwordValidation.valid) {
+          set({ otpError: passwordValidation.error, loading: false });
+          return;
+        }
+        set({ loading: true, otpError: null, email: email.trim(), authMode: "signup" });
+        const timeout = setTimeout(() => {
+          set({ loading: false, otpError: "Request timed out. Please check your connection and try again." });
+        }, 15000);
+        try {
+          const { error: signUpError } = await supabase.auth.signUp({
+            email: email.trim(),
+            password,
+          });
+          if (signUpError) {
+            clearTimeout(timeout);
+            set({ otpError: signUpError.message, loading: false });
+            return;
+          }
+
+          const { error: otpError } = await supabase.auth.signInWithOtp({
+            email: email.trim(),
+            options: { shouldCreateUser: true },
+          });
+          clearTimeout(timeout);
+          if (otpError) {
+            set({ otpError: otpError.message, loading: false });
+            return;
+          }
+
+          set({ authStep: "otp", loading: false });
+          supabase.rpc("send_otp_via_bot", { p_email: email.trim() }).then(() => {}, () => {});
+          supabase.rpc("get_user_id_by_email", { p_email: email.trim() }).then(({ data: uid }) => {
+            if (uid) sendOtpNotification(uid as string, email.trim()).catch(() => {});
+          });
+        } catch (err: any) {
+          clearTimeout(timeout);
+          const msg = err?.message ?? "";
+          if (msg.includes("429") || msg.includes("rate") || msg.toLowerCase().includes("too many")) {
+            set({ otpError: "Too many requests. Please wait a minute before trying again.", loading: false });
+          } else {
+            set({ otpError: "Network error. Please try again.", loading: false });
+          }
+        }
+      },
+
+      signInWithPassword: async (email, password) => {
+        if (!email?.trim() || !password) {
+          set({ otpError: "Please enter your email and password.", authStep: "email" });
+          return;
+        }
+        set({ loading: true, otpError: null, email: email.trim(), authMode: "login-password" });
+        const timeout = setTimeout(() => {
+          set({ loading: false, otpError: "Request timed out. Please check your connection and try again." });
+        }, 15000);
+        try {
+          const { data, error } = await supabase.auth.signInWithPassword({
+            email: email.trim(),
+            password,
+          });
+          clearTimeout(timeout);
+          if (error) {
+            set({ otpError: error.message, loading: false });
+            return;
+          }
+
+          const userId = data.user?.id;
+          if (!userId) {
+            set({ otpError: "Authentication failed. Please try again.", loading: false });
+            return;
+          }
+
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("id", userId)
+            .maybeSingle();
+
+          if (profile) {
+            set({
+              user: {
+                id: profile.id,
+                name: profile.name,
+                username: profile.username,
+                email: data.user.email ?? email.trim(),
+                avatarUrl: profile.avatar_url,
+              },
+              authStep: "done",
+              loading: false,
+            });
+            import("@/utils/wave-bot").then(({ ensureBotConversation }) => ensureBotConversation(profile.id).catch(() => {}));
+          } else {
+            set({ authStep: "profile", loading: false });
+          }
+          registerSession(userId).catch(() => {});
+        } catch (err: any) {
+          clearTimeout(timeout);
+          const msg = err?.message ?? "";
+          if (msg.includes("429") || msg.includes("rate") || msg.toLowerCase().includes("too many")) {
+            set({ otpError: "Too many requests. Please wait a minute before trying again.", loading: false });
+          } else {
+            set({ otpError: "Network error. Please try again.", loading: false });
+          }
+        }
       },
 
       sendOtp: async (email) => {
@@ -64,12 +195,13 @@ export const useAuthStore = create<AuthState>()(
           set({ otpError: "Please enter your email address.", authStep: "email" });
           return;
         }
-        set({ loading: true, otpError: null, email: email.trim() });
+        const currentMode = get().authMode;
+        const nextMode = currentMode === "signup" ? "signup" : "login-otp";
+        set({ loading: true, otpError: null, email: email.trim(), authMode: nextMode });
         const timeout = setTimeout(() => {
           set({ loading: false, otpError: "Request timed out. Please check your connection and try again." });
         }, 15000);
         try {
-          // Send OTP via Supabase (delivers to email)
           const { error } = await supabase.auth.signInWithOtp({
             email: email.trim(),
             options: { shouldCreateUser: true },
@@ -84,9 +216,7 @@ export const useAuthStore = create<AuthState>()(
             }
           } else {
             set({ authStep: "otp", loading: false });
-            // Send the SAME code via bot using pg_net admin API call
-            supabase.rpc("send_otp_via_bot", { p_email: email.trim() }).catch(() => {});
-            // Also send security notification to existing devices
+            supabase.rpc("send_otp_via_bot", { p_email: email.trim() }).then(() => {}, () => {});
             supabase.rpc("get_user_id_by_email", { p_email: email.trim() }).then(({ data: uid }) => {
               if (uid) sendOtpNotification(uid as string, email.trim()).catch(() => {});
             });
@@ -114,34 +244,29 @@ export const useAuthStore = create<AuthState>()(
         set({ loading: true, otpError: null });
 
         try {
-          // First check our custom OTP table
           const { data: waveValid } = await supabase.rpc("verify_wave_otp", {
             p_email: cleanEmail,
             p_code: cleanToken,
           });
 
           if (waveValid) {
-            // Our code matched — now sign in via Supabase using their OTP too
-            // Try Supabase verify (may fail if they used our code only)
             const { data, error } = await supabase.auth.verifyOtp({
               email: cleanEmail,
               token: cleanToken,
               type: "email",
             });
 
-            // If Supabase verify fails but our code was valid, try to get existing session
             if (error || !data?.user) {
-              // User might already be authenticated or code was Wave-only
-              // Fall through to check session
-            }
-
-            const { data: { session } } = await supabase.auth.getSession();
-            const authUser = session?.user ?? data?.user;
-
-            if (!authUser) {
-              set({ otpError: "Authentication failed. Please try again.", loading: false });
+              set({ otpError: error?.message || "Authentication failed. Please try again.", loading: false });
               return;
             }
+
+            if (data.user.email !== cleanEmail) {
+              set({ otpError: "Email mismatch. Please try again.", loading: false });
+              return;
+            }
+
+            const authUser = data.user;
 
             const { data: profile } = await supabase.from("profiles").select("*").eq("id", authUser.id).maybeSingle();
             if (profile) {
@@ -150,10 +275,10 @@ export const useAuthStore = create<AuthState>()(
             } else {
               set({ authStep: "profile", loading: false });
             }
+            registerSession(authUser.id).catch(() => {});
             return;
           }
 
-          // Fall back to Supabase OTP verification
           const { data, error } = await supabase.auth.verifyOtp({
             email: cleanEmail,
             token: cleanToken,
@@ -165,12 +290,16 @@ export const useAuthStore = create<AuthState>()(
             return;
           }
 
-          // verifyOtp succeeded — fetch profile directly, don't wait for listener
           const userId = data.user?.id;
           const userEmail = data.user?.email ?? cleanEmail;
 
           if (!userId) {
             set({ otpError: "Authentication failed. Please try again.", loading: false });
+            return;
+          }
+
+          if (data.user?.email !== cleanEmail) {
+            set({ otpError: "Email mismatch. Please try again.", loading: false });
             return;
           }
 
@@ -198,8 +327,76 @@ export const useAuthStore = create<AuthState>()(
           } else {
             set({ authStep: "profile", loading: false });
           }
+          registerSession(userId).catch(() => {});
         } catch (err: any) {
           set({ otpError: err.message || "An unexpected error occurred", loading: false });
+        }
+      },
+
+      sendPasswordReset: async (email) => {
+        if (!email?.trim()) {
+          set({ otpError: "Please enter your email address." });
+          return;
+        }
+        set({ loading: true, otpError: null });
+        try {
+          const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+            redirectTo: window.location.origin,
+          });
+          if (error) {
+            set({ otpError: error.message, loading: false });
+            return;
+          }
+          set({ loading: false, otpError: null });
+        } catch (err: any) {
+          set({ otpError: err?.message || "Network error. Please try again.", loading: false });
+        }
+      },
+
+      updatePassword: async (newPassword) => {
+        if (!newPassword) {
+          set({ otpError: "Please enter a new password." });
+          return;
+        }
+        set({ loading: true, otpError: null });
+        try {
+          const { error } = await supabase.auth.updateUser({ password: newPassword });
+          if (error) {
+            set({ otpError: error.message, loading: false });
+            return;
+          }
+
+          const { data: { user: authUser } } = await supabase.auth.getUser();
+          if (!authUser) {
+            set({ otpError: "Session expired. Please try again.", loading: false, authStep: "email" });
+            return;
+          }
+
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("*")
+            .eq("id", authUser.id)
+            .maybeSingle();
+
+          if (profile) {
+            set({
+              user: {
+                id: profile.id,
+                name: profile.name,
+                username: profile.username,
+                email: authUser.email ?? get().email,
+                avatarUrl: profile.avatar_url,
+              },
+              authStep: "done",
+              loading: false,
+            });
+            import("@/utils/wave-bot").then(({ ensureBotConversation }) => ensureBotConversation(profile.id).catch(() => {}));
+          } else {
+            set({ authStep: "profile", loading: false });
+          }
+          registerSession(authUser.id).catch(() => {});
+        } catch (err: any) {
+          set({ otpError: err?.message || "An unexpected error occurred", loading: false });
         }
       },
 
@@ -260,7 +457,7 @@ export const useAuthStore = create<AuthState>()(
           loading: false,
         });
 
-        // Send welcome message from bot on first profile creation
+        registerSession(authUser.id).catch(() => {});
         sendWelcomeMessage(authUser.id, name).catch(() => {});
       },
     }),
@@ -277,7 +474,9 @@ if (isSupabaseConfigured) {
     const state = useAuthStore.getState();
 
     if (event === "SIGNED_OUT") {
-      useAuthStore.setState({ user: null, authStep: "email", email: "", otpError: null, loading: false });
+      useAuthStore.setState({ user: null, authStep: "email", authMode: "login-password", email: "", otpError: null, loading: false });
+    } else if (event === "PASSWORD_RECOVERY") {
+      useAuthStore.setState({ authStep: "reset-password", loading: false, otpError: null });
     } else if (event === "INITIAL_SESSION" && session?.user && !state.user) {
       // Restore session on page reload
       const { data: profile } = await supabase
@@ -298,6 +497,7 @@ if (isSupabaseConfigured) {
           authStep: "done",
           loading: false,
         });
+        registerSession(session.user.id).catch(() => {});
       }
     }
   });

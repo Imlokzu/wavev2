@@ -36,7 +36,7 @@ export function Modal({ isOpen, onClose, title, children, size = "md" }: ModalPr
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div
         className={cn(
-          "w-full rounded-2xl bg-[#17212b] p-6 border border-[#1f2f3f]",
+          "w-full rounded-2xl bg-[#17212b] p-6 border border-[#1f2f3f] animate-modal-open",
           sizes[size]
         )}
         onClick={(e) => e.stopPropagation()}

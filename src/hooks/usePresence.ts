@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { create } from "zustand";
 import { supabase } from "@/utils/supabase";
 import { useAuthStore } from "@/store/auth-store";
+import { useSettings } from "@/store/settings-store";
 
 /* ── Online users store ─────────────────────────────── */
 interface PresenceState {
@@ -25,9 +26,10 @@ const isSupabaseConfigured =
 /* ── Hook — call once at app root ───────────────────── */
 export function usePresence() {
   const user = useAuthStore((s) => s.user);
+  const showLastSeen = useSettings((s) => s.showLastSeen);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !user) return;
+    if (!isSupabaseConfigured || !user || !showLastSeen) return;
 
     const channel = supabase.channel("wave:presence", {
       config: { presence: { key: user.id } },
@@ -66,5 +68,5 @@ export function usePresence() {
       window.removeEventListener("beforeunload", onUnload);
       supabase.removeChannel(channel);
     };
-  }, [user?.id]);
+  }, [user?.id, showLastSeen]);
 }

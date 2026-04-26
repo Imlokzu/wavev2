@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuthStore } from "@/store/auth-store";
 import { useChatStore } from "@/store/chat-store";
-import { useSettings } from "@/store/settings-store";
+import { useSettings, type UserSettings } from "@/store/settings-store";
+import { useThemeStore } from "@/store/theme-store";
 import { supabase } from "@/utils/supabase";
+import { cn } from "@/utils/cn";
 import { getSessions, terminateSession, terminateAllOtherSessions, type Session } from "@/utils/sessions";
 
 const LANGUAGES = ["English", "Spanish", "French", "German", "Japanese", "Arabic", "Chinese", "Russian"];
@@ -121,8 +123,11 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
   const signOut = useAuthStore((s) => s.signOut);
   const toggleSettings = useChatStore((s) => s.toggleSettings);
   const settings = useSettings();
+  const theme = useThemeStore((s) => s.theme);
+  const setTheme = useThemeStore((s) => s.setTheme);
 
-  const [tab, setTab] = useState<"settings" | "sessions">("settings");
+  type Tab = "general" | "appearance" | "account" | "privacy" | "sessions" | "about";
+  const [tab, setTab] = useState<Tab>("general");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [editingProfile, setEditingProfile] = useState(false);
   const [editName, setEditName] = useState(user?.name ?? "");
@@ -130,8 +135,28 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
   const [editBio, setEditBio] = useState(settings.bio ?? "");
   const [editAvatar, setEditAvatar] = useState<string | null>(user?.avatarUrl ?? null);
   const [saving, setSaving] = useState(false);
-  const avatarInputRef = useRef<HTMLInputElement>(null);
 
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [passwordSuccess, setPasswordSuccess] = useState(false);
+
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [emailError, setEmailError] = useState("");
+  const [emailSuccess, setEmailSuccess] = useState(false);
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const showSaveFeedback = (key: string) => {
+    setSavedKey(key);
+    setTimeout(() => setSavedKey(null), 1500);
+  };
+
+  const avatarInputRef = useRef<HTMLInputElement>(null);
   const initials = user?.name?.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2);
 
   const handleClose = () => { toggleSettings(); onClose?.(); };
@@ -140,7 +165,6 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
   const handleSaveProfile = async () => {
     if (!user || !editName.trim()) return;
     setSaving(true);
-
     let finalAvatarUrl = editAvatar;
     if (editAvatar?.startsWith("data:")) {
       const blob = await fetch(editAvatar).then((r) => r.blob());
@@ -152,11 +176,9 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
         finalAvatarUrl = publicUrl;
       }
     }
-
     const cleanUsername = editUsername.trim().replace(/[^a-z0-9_]/gi, "").toLowerCase() || user.username;
     await supabase.from("profiles").update({ name: editName.trim(), username: cleanUsername, avatar_url: finalAvatarUrl }).eq("id", user.id);
     await settings.save(user.id, { bio: editBio });
-
     setUser({ ...user, name: editName.trim(), username: cleanUsername, avatarUrl: finalAvatarUrl });
     setSaving(false);
     setEditingProfile(false);
@@ -164,13 +186,84 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
 
   const handleToggle = async (key: keyof typeof settings, value: boolean) => {
     if (!user) return;
-    await settings.save(user.id, { [key]: value });
+    let finalValue = value;
+    if (key === 'notificationsEnabled' && value === true && Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission === 'denied') {
+        finalValue = false;
+      }
+    }
+    await settings.save(user.id, { [key]: finalValue });
+    showSaveFeedback(key as string);
+  };
+
+  const handleFontSize = async (size: UserSettings["fontSize"]) => {
+    if (!user) return;
+    const sizeMap: Record<UserSettings["fontSize"], string> = {
+      compact: '13px',
+      normal: '15px',
+      large: '17px',
+    };
+    document.documentElement.style.setProperty('--wave-font-size', sizeMap[size]);
+    await settings.save(user.id, { fontSize: size });
+    showSaveFeedback('fontSize');
   };
 
   const handleLanguage = async (lang: string) => {
     if (!user) return;
     await settings.save(user.id, { language: lang });
     setActiveMenu(null);
+    showSaveFeedback('language');
+  };
+
+  const handleProfileVisibility = async (visibility: UserSettings["profileVisibility"]) => {
+    if (!user) return;
+    await settings.save(user.id, { profileVisibility: visibility });
+    showSaveFeedback('profileVisibility');
+  };
+
+  const handleChangePassword = async () => {
+    if (!newPassword.trim() || newPassword.length < 6) {
+      setPasswordError("Password must be at least 6 characters.");
+      return;
+    }
+    setPasswordError("");
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setPasswordError(error.message);
+    } else {
+      setPasswordSuccess(true);
+      setNewPassword("");
+      setTimeout(() => { setShowPasswordModal(false); setPasswordSuccess(false); }, 1500);
+    }
+  };
+
+  const handleUpdateEmail = async () => {
+    if (!newEmail.trim() || !newEmail.includes("@")) {
+      setEmailError("Please enter a valid email.");
+      return;
+    }
+    setEmailError("");
+    const { error } = await supabase.auth.updateUser({ email: newEmail });
+    if (error) {
+      setEmailError(error.message);
+    } else {
+      setEmailSuccess(true);
+      setNewEmail("");
+      setTimeout(() => { setShowEmailModal(false); setEmailSuccess(false); }, 1500);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirm !== "DELETE") return;
+    setDeleting(true);
+    if (user) {
+      await supabase.from("user_settings").delete().eq("user_id", user.id);
+      await supabase.from("profiles").delete().eq("id", user.id);
+    }
+    await signOut();
+    setDeleting(false);
+    setShowDeleteModal(false);
   };
 
   return (
@@ -182,11 +275,18 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
         </button>
         <span className="text-sm font-semibold text-white flex-1">Settings</span>
         {/* Tab switcher */}
-        <div className="flex gap-1 bg-[#1c2733] rounded-lg p-0.5">
-          {(["settings", "sessions"] as const).map((t) => (
-            <button key={t} onClick={() => setTab(t)}
-              className={`px-3 py-1 rounded-md text-[11px] font-medium transition capitalize ${tab === t ? "bg-[#2b5278] text-white" : "text-[#6b8299] hover:text-white"}`}>
-              {t}
+        <div className="flex gap-1 bg-[#1c2733] rounded-lg p-0.5 overflow-x-auto">
+          {[
+            { id: "general" as Tab, label: "General" },
+            { id: "appearance" as Tab, label: "Appearance" },
+            { id: "account" as Tab, label: "Account" },
+            { id: "privacy" as Tab, label: "Privacy" },
+            { id: "sessions" as Tab, label: "Sessions" },
+            { id: "about" as Tab, label: "About" },
+          ].map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              className={cn("px-2.5 py-1 rounded-md text-[11px] font-medium transition whitespace-nowrap", tab === t.id ? "bg-[#2b5278] text-white" : "text-[#6b8299] hover:text-white")}>
+              {t.label}
             </button>
           ))}
         </div>
@@ -214,14 +314,19 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
             <svg className="text-[#4a6580] group-hover:text-[#7eb88a] transition shrink-0" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M13 2l1 1-9 9H3v-2L13 2z"/></svg>
           </button>
 
-          {/* Settings list */}
-          <div className="flex-1 overflow-y-auto py-1 relative">
-            {!activeMenu ? (
+          {/* Tab content */}
+          <div key={tab} className="flex-1 overflow-y-auto py-1 relative animate-wave-fade-in">
+            {tab === "general" && (
               <div className="flex flex-col">
                 {/* Notifications */}
                 <div className="flex items-center gap-3 px-4 py-3">
                   <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M9 16c2 0 3-1 3-3H6c0 2 1 3 3 3zm5.5-4c0-3.5-1.5-4.5-1.5-6a4 4 0 00-8 0c0 1.5-1.5 2.5-1.5 6h11z"/></svg></span>
                   <span className="text-sm text-[#e8e8e8] flex-1">Notifications</span>
+                  {savedKey === 'notificationsEnabled' && (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#7eb88a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 7l3.5 3.5L12 3"/>
+                    </svg>
+                  )}
                   <Toggle value={settings.notificationsEnabled} onChange={(v) => handleToggle("notificationsEnabled", v)} />
                 </div>
 
@@ -229,6 +334,11 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
                 <div className="flex items-center gap-3 px-4 py-3">
                   <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M3 7v4h3l4 4V3L6 7H3zm11-2a6 6 0 010 8"/></svg></span>
                   <span className="text-sm text-[#e8e8e8] flex-1">Sound</span>
+                  {savedKey === 'soundEnabled' && (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#7eb88a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 7l3.5 3.5L12 3"/>
+                    </svg>
+                  )}
                   <Toggle value={settings.soundEnabled} onChange={(v) => handleToggle("soundEnabled", v)} />
                 </div>
 
@@ -236,6 +346,11 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
                 <div className="flex items-center gap-3 px-4 py-3">
                   <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M2 9l4 4L16 4M6 9l4 4"/></svg></span>
                   <span className="text-sm text-[#e8e8e8] flex-1">Read Receipts</span>
+                  {savedKey === 'showReadReceipts' && (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#7eb88a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 7l3.5 3.5L12 3"/>
+                    </svg>
+                  )}
                   <Toggle value={settings.showReadReceipts} onChange={(v) => handleToggle("showReadReceipts", v)} />
                 </div>
 
@@ -243,6 +358,11 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
                 <div className="flex items-center gap-3 px-4 py-3">
                   <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="9" cy="9" r="7"/><path d="M9 5v4l3 2"/></svg></span>
                   <span className="text-sm text-[#e8e8e8] flex-1">Show Last Seen</span>
+                  {savedKey === 'showLastSeen' && (
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="#7eb88a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M2 7l3.5 3.5L12 3"/>
+                    </svg>
+                  )}
                   <Toggle value={settings.showLastSeen} onChange={(v) => handleToggle("showLastSeen", v)} />
                 </div>
 
@@ -253,15 +373,116 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
                   <span className="text-xs text-[#6b8299]">{settings.language}</span>
                   <svg className="text-[#2a3a4a]" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M5 3l4 4-4 4"/></svg>
                 </button>
+              </div>
+            )}
 
-                {/* About */}
-                <button onClick={() => setActiveMenu("about")} className="flex items-center gap-3 px-4 py-3 hover:bg-[#202b36] transition">
-                  <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><circle cx="9" cy="9" r="7"/><path d="M9 8v5M9 6h.01"/></svg></span>
-                  <span className="text-sm text-[#e8e8e8] flex-1">About</span>
+            {tab === "appearance" && (
+              <div className="flex flex-col gap-4 px-4 py-4">
+                <div>
+                  <p className="text-xs font-medium text-[#6b8299] uppercase tracking-wide mb-2">Theme</p>
+                  <div className="flex gap-2">
+                    {(["dark", "light"] as const).map((t) => (
+                      <button key={t} onClick={() => setTheme(t)}
+                        className={cn("px-4 py-2 rounded-lg transition text-sm", theme === t ? "bg-[#7eb88a] text-[#0e1621] font-semibold" : "bg-[#1c2733] text-[#6b8299] hover:text-white")}>
+                        {t.charAt(0).toUpperCase() + t.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-[#6b8299] uppercase tracking-wide mb-2">Font Size</p>
+                  <div className="flex gap-2">
+                    {([
+                      { value: "compact" as const, label: "Compact" },
+                      { value: "normal" as const, label: "Normal" },
+                      { value: "large" as const, label: "Large" },
+                    ]).map((opt) => (
+                      <button key={opt.value} onClick={() => handleFontSize(opt.value)}
+                        className={cn("px-4 py-2 rounded-lg transition text-sm", settings.fontSize === opt.value ? "bg-[#7eb88a] text-[#0e1621] font-semibold" : "bg-[#1c2733] text-[#6b8299] hover:text-white")}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === "account" && (
+              <div className="flex flex-col gap-1 px-4 py-2">
+                <div className="px-4 py-3 rounded-xl bg-[#1c2733]">
+                  <p className="text-[11px] text-[#6b8299] mb-1">Current Email</p>
+                  <p className="text-sm text-white font-medium">{user?.email ?? "—"}</p>
+                </div>
+
+                <button onClick={() => { setShowPasswordModal(true); setPasswordError(""); setPasswordSuccess(false); setNewPassword(""); }}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[#202b36] transition rounded-xl mt-2">
+                  <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><rect x="3" y="8" width="12" height="7" rx="1.5"/><path d="M6 8V5a3 3 0 016 0v3"/></svg></span>
+                  <span className="text-sm text-[#e8e8e8] flex-1 text-left">Change Password</span>
                   <svg className="text-[#2a3a4a]" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M5 3l4 4-4 4"/></svg>
                 </button>
+
+                <button onClick={() => { setShowEmailModal(true); setEmailError(""); setEmailSuccess(false); setNewEmail(""); }}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-[#202b36] transition rounded-xl">
+                  <span className="text-[#6b8299]"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M2 5h14v8a1 1 0 01-1 1H3a1 1 0 01-1-1V5z"/><path d="M2 5l7 4 7-4"/></svg></span>
+                  <span className="text-sm text-[#e8e8e8] flex-1 text-left">Update Email</span>
+                  <svg className="text-[#2a3a4a]" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M5 3l4 4-4 4"/></svg>
+                </button>
+
+                <button onClick={() => { setShowDeleteModal(true); setDeleteConfirm(""); }}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-red-500/10 transition rounded-xl mt-2 border border-red-400/10">
+                  <span className="text-red-400"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"><path d="M3 6h12M5 6v10h8V6M7 3h4"/></svg></span>
+                  <span className="text-sm text-red-400 flex-1 text-left">Delete Account</span>
+                  <svg className="text-red-400/40" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M5 3l4 4-4 4"/></svg>
+                </button>
               </div>
-            ) : (
+            )}
+
+            {tab === "privacy" && (
+              <div className="flex flex-col gap-4 px-4 py-4">
+                <div>
+                  <p className="text-xs font-medium text-[#6b8299] uppercase tracking-wide mb-2">Who can see my profile</p>
+                  <div className="flex flex-col gap-1">
+                    {(["everyone", "contacts"] as const).map((opt) => (
+                      <button key={opt} onClick={() => handleProfileVisibility(opt)}
+                        className={cn("flex items-center justify-between px-4 py-3 rounded-xl transition text-left", settings.profileVisibility === opt ? "bg-[#1c2733] ring-1 ring-[#7eb88a]/30" : "hover:bg-[#202b36]")}>
+                        <span className={cn("text-sm", settings.profileVisibility === opt ? "text-[#7eb88a] font-medium" : "text-[#e8e8e8]")}>
+                          {opt === "everyone" ? "Everyone" : "Contacts Only"}
+                        </span>
+                        {settings.profileVisibility === opt && <svg className="text-[#7eb88a]" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 8l3 3 7-7"/></svg>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="text-xs font-medium text-[#6b8299] uppercase tracking-wide mb-2">Blocked Users</p>
+                  <div className="rounded-xl bg-[#1c2733] px-4 py-6 text-center">
+                    <p className="text-sm text-[#6b8299]">No blocked users</p>
+                    <p className="text-[11px] text-[#4a6580] mt-1">Manage who can message you</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {tab === "about" && (
+              <div className="flex flex-col items-center px-4 py-8 text-center gap-4">
+                <div className="h-16 w-16 bg-[#2e7d5b] rounded-2xl flex items-center justify-center">
+                  <svg width="32" height="32" viewBox="0 0 40 40" fill="none"><path d="M10 20c3-5 6 5 10 0s6 5 10 0" stroke="#7eb88a" strokeWidth="2.5" strokeLinecap="round"/></svg>
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Wave 2.0</h3>
+                  <p className="text-xs text-[#6b8299]">Version 2.0.0</p>
+                </div>
+                <p className="text-xs text-[#4a6580] max-w-[220px]">Real-time messaging built with React, Supabase, and Tailwind CSS.</p>
+                <div className="flex gap-4 mt-2">
+                  <a href="#" onClick={(e) => e.preventDefault()} className="text-[11px] text-[#7eb88a] hover:underline">Terms of Service</a>
+                  <a href="#" onClick={(e) => e.preventDefault()} className="text-[11px] text-[#7eb88a] hover:underline">Privacy Policy</a>
+                </div>
+              </div>
+            )}
+
+            {/* Active menu overlay (language) */}
+            {activeMenu && (
               <div className="absolute inset-0 bg-[#17212b] z-10 flex flex-col animate-pop-in">
                 <button onClick={() => setActiveMenu(null)} className="flex items-center gap-2 px-4 py-3 text-[#7eb88a] text-sm font-medium border-b border-[#1f2f3f] hover:bg-[#202b36] transition">
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M11 5l-4 4 4 4"/></svg>
@@ -270,22 +491,10 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
                 <div className="flex-1 overflow-y-auto">
                   {activeMenu === "language" && LANGUAGES.map((lang) => (
                     <button key={lang} onClick={() => handleLanguage(lang)} className="flex w-full items-center justify-between px-4 py-3 hover:bg-[#202b36] transition">
-                      <span className={`text-sm ${settings.language === lang ? "text-[#7eb88a] font-medium" : "text-[#e8e8e8]"}`}>{lang}</span>
+                      <span className={cn("text-sm", settings.language === lang ? "text-[#7eb88a] font-medium" : "text-[#e8e8e8]")}>{lang}</span>
                       {settings.language === lang && <svg className="text-[#7eb88a]" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 8l3 3 7-7"/></svg>}
                     </button>
                   ))}
-                  {activeMenu === "about" && (
-                    <div className="flex flex-col items-center px-4 py-8 text-center gap-4">
-                      <div className="h-16 w-16 bg-[#2e7d5b] rounded-2xl flex items-center justify-center">
-                        <svg width="32" height="32" viewBox="0 0 40 40" fill="none"><path d="M10 20c3-5 6 5 10 0s6 5 10 0" stroke="#7eb88a" strokeWidth="2.5" strokeLinecap="round"/></svg>
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-white">Wave 2.0</h3>
-                        <p className="text-xs text-[#6b8299]">Version 2.0.0</p>
-                      </div>
-                      <p className="text-xs text-[#4a6580] max-w-[200px]">Real-time messaging built with React, Supabase, and Tailwind CSS.</p>
-                    </div>
-                  )}
                 </div>
               </div>
             )}
@@ -342,6 +551,55 @@ export function SettingsPanel({ onClose }: { onClose?: () => void }) {
               <button onClick={() => setEditingProfile(false)} className="flex-1 py-2.5 rounded-xl text-sm text-[#6b8299] border border-[#2a3a4a] hover:bg-[#1c2733] transition">Cancel</button>
               <button onClick={handleSaveProfile} disabled={!editName.trim() || saving} className="flex-1 py-2.5 rounded-xl text-sm bg-[#7eb88a] text-[#0e1621] font-semibold hover:bg-[#6da879] transition disabled:opacity-40">
                 {saving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Password Modal */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowPasswordModal(false)}>
+          <div className="bg-[#202b36] rounded-2xl p-6 w-80 shadow-xl ring-1 ring-white/5 animate-pop-in flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-semibold text-sm">Change Password</h3>
+            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password" className="w-full bg-[#1c2733] text-sm text-white rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-[#7eb88a]/50" />
+            {passwordError && <p className="text-[11px] text-red-400">{passwordError}</p>}
+            {passwordSuccess && <p className="text-[11px] text-[#7eb88a]">Password updated!</p>}
+            <div className="flex gap-2">
+              <button onClick={() => setShowPasswordModal(false)} className="flex-1 py-2.5 rounded-xl text-sm text-[#6b8299] border border-[#2a3a4a] hover:bg-[#1c2733] transition">Cancel</button>
+              <button onClick={handleChangePassword} className="flex-1 py-2.5 rounded-xl text-sm bg-[#7eb88a] text-[#0e1621] font-semibold hover:bg-[#6da879] transition">Update</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Update Email Modal */}
+      {showEmailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowEmailModal(false)}>
+          <div className="bg-[#202b36] rounded-2xl p-6 w-80 shadow-xl ring-1 ring-white/5 animate-pop-in flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-semibold text-sm">Update Email</h3>
+            <input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="New email address" className="w-full bg-[#1c2733] text-sm text-white rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-[#7eb88a]/50" />
+            {emailError && <p className="text-[11px] text-red-400">{emailError}</p>}
+            {emailSuccess && <p className="text-[11px] text-[#7eb88a]">Email updated!</p>}
+            <div className="flex gap-2">
+              <button onClick={() => setShowEmailModal(false)} className="flex-1 py-2.5 rounded-xl text-sm text-[#6b8299] border border-[#2a3a4a] hover:bg-[#1c2733] transition">Cancel</button>
+              <button onClick={handleUpdateEmail} className="flex-1 py-2.5 rounded-xl text-sm bg-[#7eb88a] text-[#0e1621] font-semibold hover:bg-[#6da879] transition">Update</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Account Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowDeleteModal(false)}>
+          <div className="bg-[#202b36] rounded-2xl p-6 w-80 shadow-xl ring-1 ring-white/5 animate-pop-in flex flex-col gap-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-semibold text-sm">Delete Account</h3>
+            <p className="text-[11px] text-[#6b8299]">This will permanently delete your profile and settings. Type <span className="text-red-400 font-medium">DELETE</span> to confirm.</p>
+            <input type="text" value={deleteConfirm} onChange={(e) => setDeleteConfirm(e.target.value)} placeholder="Type DELETE" className="w-full bg-[#1c2733] text-sm text-white rounded-xl px-3 py-2.5 outline-none focus:ring-1 focus:ring-red-400/50" />
+            <div className="flex gap-2">
+              <button onClick={() => setShowDeleteModal(false)} className="flex-1 py-2.5 rounded-xl text-sm text-[#6b8299] border border-[#2a3a4a] hover:bg-[#1c2733] transition">Cancel</button>
+              <button onClick={handleDeleteAccount} disabled={deleteConfirm !== "DELETE" || deleting} className="flex-1 py-2.5 rounded-xl text-sm bg-red-500/20 text-red-400 font-semibold hover:bg-red-500/30 transition disabled:opacity-40">
+                {deleting ? "Deleting..." : "Delete"}
               </button>
             </div>
           </div>

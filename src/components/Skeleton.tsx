@@ -12,7 +12,7 @@ export function Skeleton({ className, count = 1 }: SkeletonProps) {
         <div
           key={i}
           className={cn(
-            "animate-pulse rounded-lg bg-[#1f2f3f]",
+            "animate-shimmer rounded-lg",
             className
           )}
         />

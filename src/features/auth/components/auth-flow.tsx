@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuthStore } from "@/store/auth-store";
+import { cn } from "@/utils/cn";
 
 export function AuthFlow() {
   const authStep = useAuthStore((s) => s.authStep);
@@ -10,6 +11,8 @@ export function AuthFlow() {
           {authStep === "email" && <EmailStep />}
           {authStep === "otp" && <OtpStep />}
           {authStep === "profile" && <ProfileStep />}
+          {authStep === "forgot-password" && <ForgotPasswordStep />}
+          {authStep === "reset-password" && <ResetPasswordStep />}
         </div>
       </div>
     </div>
@@ -29,69 +32,302 @@ function IconWave({ size = 40 }: { size?: number }) {
   );
 }
 
-/* ── Step 1: Email ──────────────────────────────────── */
+function IconEye({ open, className, ...props }: { open: boolean } & React.SVGProps<SVGSVGElement>) {
+  return open ? (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  ) : (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+      <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
+
+function IconCheck({ className, ...props }: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={className} {...props}>
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+/* ── Password Strength ──────────────────────────────── */
+
+function getPasswordStrength(password: string) {
+  const requirements = [
+    { label: "At least 8 characters", met: password.length >= 8 },
+    { label: "At least 1 uppercase letter", met: /[A-Z]/.test(password) },
+    { label: "At least 1 number", met: /[0-9]/.test(password) },
+    { label: "At least 1 special character", met: /[^A-Za-z0-9]/.test(password) },
+  ];
+  const metCount = requirements.filter((r) => r.met).length;
+  let strength: "weak" | "medium" | "strong" = "weak";
+  if (metCount === 4) strength = "strong";
+  else if (metCount >= 2) strength = "medium";
+  return { requirements, strength, metCount };
+}
+
+function PasswordStrength({ password }: { password: string }) {
+  if (!password) return null;
+  const { requirements, strength } = getPasswordStrength(password);
+  const barColor =
+    strength === "strong" ? "bg-[#7eb88a]" : strength === "medium" ? "bg-yellow-500" : "bg-red-400";
+  const labelColor =
+    strength === "strong" ? "text-[#7eb88a]" : strength === "medium" ? "text-yellow-500" : "text-red-400";
+  const width = strength === "strong" ? "100%" : strength === "medium" ? "66%" : "33%";
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <div className="h-1.5 flex-1 rounded-full bg-[#2a3a4a] overflow-hidden">
+          <div className={cn("h-full rounded-full transition-all duration-300", barColor)} style={{ width }} />
+        </div>
+        <span className={cn("text-[10px] font-semibold uppercase tracking-wider", labelColor)}>{strength}</span>
+      </div>
+      <ul className="space-y-1">
+        {requirements.map((req) => (
+          <li key={req.label} className={cn("flex items-center gap-1.5 text-[11px] transition", req.met ? "text-[#7eb88a]" : "text-[#4a6580]")}>
+            <IconCheck className={cn("transition", req.met ? "opacity-100" : "opacity-0")} />
+            <span>{req.label}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/* ── Password Input ─────────────────────────────────── */
+
+function PasswordInput({
+  value,
+  onChange,
+  placeholder,
+  autoFocus,
+}: {
+  value: string;
+  onChange: (val: string) => void;
+  placeholder: string;
+  autoFocus?: boolean;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="flex items-center gap-3 rounded-xl bg-[#1c2733] px-4 py-3">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4a6580" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+        <path d="M7 11V7a5 5 0 0110 0v4" />
+      </svg>
+      <input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoFocus={autoFocus}
+        className="flex-1 bg-transparent text-sm text-white placeholder-[#4a6580] outline-none"
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        className="text-[#4a6580] hover:text-[#6b8299] transition"
+        tabIndex={-1}
+      >
+        <IconEye open={show} />
+      </button>
+    </div>
+  );
+}
+
+/* ── Step 1: Email / Login / Signup ─────────────────── */
 
 function EmailStep() {
+  const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [localError, setLocalError] = useState("");
+
+  const signUp = useAuthStore((s) => s.signUp);
+  const signInWithPassword = useAuthStore((s) => s.signInWithPassword);
   const sendOtp = useAuthStore((s) => s.sendOtp);
   const loading = useAuthStore((s) => s.loading);
   const otpError = useAuthStore((s) => s.otpError);
-  const [localError, setLocalError] = useState("");
+  const setAuthStep = useAuthStore((s) => s.setAuthStep);
+  const setAuthMode = useAuthStore((s) => s.setAuthMode);
 
-  const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  const { strength } = getPasswordStrength(password);
+  const passwordsMatch = password === confirmPassword;
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isValid) { setLocalError("Enter a valid email address"); return; }
+    if (!isValidEmail) { setLocalError("Enter a valid email address"); return; }
+    if (!password) { setLocalError("Please enter your password"); return; }
     setLocalError("");
+    await signInWithPassword(email, password);
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isValidEmail) { setLocalError("Enter a valid email address"); return; }
+    if (strength !== "strong") { setLocalError("Please meet all password requirements"); return; }
+    if (!passwordsMatch) { setLocalError("Passwords do not match"); return; }
+    setLocalError("");
+    await signUp(email, password);
+  };
+
+  const handleOtpLogin = async () => {
+    if (!isValidEmail) { setLocalError("Enter a valid email address"); return; }
+    setLocalError("");
+    setAuthMode("login-otp");
     await sendOtp(email);
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div className="flex flex-col items-center gap-3">
         <IconWave size={56} />
         <h1 className="text-2xl font-semibold text-white">Wave 2.0</h1>
-        <p className="text-sm text-[#6b8299]">Enter your email to sign in</p>
+        <p className="text-sm text-[#6b8299]">
+          {mode === "login" ? "Welcome back" : "Create your account"}
+        </p>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="flex items-center gap-3 rounded-xl bg-[#1c2733] px-4 py-3">
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#4a6580" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="4" width="16" height="12" rx="2" />
-            <path d="M2 6l8 5 8-5" />
-          </svg>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => { setEmail(e.target.value); setLocalError(""); }}
-            placeholder="you@example.com"
-            className="flex-1 bg-transparent text-sm text-white placeholder-[#4a6580] outline-none"
-            autoFocus
-            aria-label="Email address"
-          />
-        </div>
-
-        {(localError || otpError) && (
-          <p className="text-xs text-red-400 text-center" role="alert">{localError || otpError}</p>
-        )}
-
-        <p className="text-center text-xs text-[#4a6580]">
-          We'll send a verification code to your email
-        </p>
-
+      <div className="flex rounded-xl bg-[#1c2733] p-1">
         <button
-          type="submit"
-          disabled={!isValid || loading}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#7eb88a] py-3 text-sm font-semibold text-[#0e1621] transition hover:bg-[#6da879] disabled:opacity-40"
+          type="button"
+          onClick={() => { setMode("login"); setLocalError(""); }}
+          className={cn(
+            "flex-1 rounded-lg py-2 text-xs font-semibold transition",
+            mode === "login" ? "bg-[#2a3a4a] text-white" : "text-[#4a6580] hover:text-[#6b8299]"
+          )}
         >
-          {loading ? (
-            <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <circle cx="8" cy="8" r="6" /><path d="M8 2a6 6 0 010 12" strokeLinecap="round" />
-            </svg>
-          ) : "Continue →"}
+          Log In
         </button>
-      </form>
+        <button
+          type="button"
+          onClick={() => { setMode("signup"); setLocalError(""); }}
+          className={cn(
+            "flex-1 rounded-lg py-2 text-xs font-semibold transition",
+            mode === "signup" ? "bg-[#2a3a4a] text-white" : "text-[#4a6580] hover:text-[#6b8299]"
+          )}
+        >
+          Sign Up
+        </button>
+      </div>
+
+      {mode === "login" ? (
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div className="flex items-center gap-3 rounded-xl bg-[#1c2733] px-4 py-3">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#4a6580" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="16" height="12" rx="2" />
+              <path d="M2 6l8 5 8-5" />
+            </svg>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setLocalError(""); }}
+              placeholder="you@example.com"
+              className="flex-1 bg-transparent text-sm text-white placeholder-[#4a6580] outline-none"
+              autoFocus
+              aria-label="Email address"
+            />
+          </div>
+
+          <PasswordInput
+            value={password}
+            onChange={setPassword}
+            placeholder="Password"
+          />
+
+          {(localError || otpError) && (
+            <p className="text-xs text-red-400 text-center" role="alert">{localError || otpError}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={!isValidEmail || !password || loading}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#7eb88a] py-3 text-sm font-semibold text-[#0e1621] transition hover:bg-[#6da879] disabled:opacity-40"
+          >
+            {loading ? (
+              <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="8" cy="8" r="6" /><path d="M8 2a6 6 0 010 12" strokeLinecap="round" />
+              </svg>
+            ) : "Log In"}
+          </button>
+
+          <div className="flex flex-col gap-2 text-center">
+            <button
+              type="button"
+              onClick={handleOtpLogin}
+              disabled={loading}
+              className="text-xs text-[#7eb88a] hover:underline disabled:opacity-40"
+            >
+              Log in with code instead
+            </button>
+            <button
+              type="button"
+              onClick={() => { setAuthStep("forgot-password"); setLocalError(""); }}
+              className="text-xs text-[#4a6580] hover:text-[#6b8299] transition"
+            >
+              Forgot Password?
+            </button>
+          </div>
+        </form>
+      ) : (
+        <form onSubmit={handleSignup} className="space-y-4">
+          <div className="flex items-center gap-3 rounded-xl bg-[#1c2733] px-4 py-3">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#4a6580" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="16" height="12" rx="2" />
+              <path d="M2 6l8 5 8-5" />
+            </svg>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setLocalError(""); }}
+              placeholder="you@example.com"
+              className="flex-1 bg-transparent text-sm text-white placeholder-[#4a6580] outline-none"
+              autoFocus
+              aria-label="Email address"
+            />
+          </div>
+
+          <PasswordInput
+            value={password}
+            onChange={setPassword}
+            placeholder="Create a password"
+          />
+
+          <PasswordStrength password={password} />
+
+          <PasswordInput
+            value={confirmPassword}
+            onChange={setConfirmPassword}
+            placeholder="Confirm password"
+          />
+
+          {(localError || otpError) && (
+            <p className="text-xs text-red-400 text-center" role="alert">{localError || otpError}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={!isValidEmail || !password || strength !== "strong" || !passwordsMatch || loading}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#7eb88a] py-3 text-sm font-semibold text-[#0e1621] transition hover:bg-[#6da879] disabled:opacity-40"
+          >
+            {loading ? (
+              <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="8" cy="8" r="6" /><path d="M8 2a6 6 0 010 12" strokeLinecap="round" />
+              </svg>
+            ) : "Sign Up"}
+          </button>
+
+          <p className="text-center text-xs text-[#4a6580]">
+            We'll send a verification code to confirm your email
+          </p>
+        </form>
+      )}
     </div>
   );
 }
@@ -103,6 +339,7 @@ function OtpStep() {
   const [isVerifying, setIsVerifying] = useState(false);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const email = useAuthStore((s) => s.email);
+  const authMode = useAuthStore((s) => s.authMode);
   const verifyOtp = useAuthStore((s) => s.verifyOtp);
   const sendOtp = useAuthStore((s) => s.sendOtp);
   const loading = useAuthStore((s) => s.loading);
@@ -168,7 +405,9 @@ function OtpStep() {
             <rect x="2" y="4" width="20" height="16" rx="2" /><path d="M2 7l10 6.5L22 7" />
           </svg>
         </div>
-        <h1 className="text-xl font-semibold text-white">Check your email</h1>
+        <h1 className="text-xl font-semibold text-white">
+          {authMode === "signup" ? "Verify your email" : "Check your email"}
+        </h1>
         <p className="text-sm text-[#6b8299] text-center">
           We sent a 6-digit code to<br />
           <span className="text-white font-medium">{email}</span>
@@ -235,6 +474,178 @@ function OtpStep() {
           ← Change email
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ── Step: Forgot Password ──────────────────────────── */
+
+function ForgotPasswordStep() {
+  const storeEmail = useAuthStore((s) => s.email);
+  const [email, setEmail] = useState(storeEmail);
+  const [localError, setLocalError] = useState("");
+  const [sent, setSent] = useState(false);
+
+  const sendPasswordReset = useAuthStore((s) => s.sendPasswordReset);
+  const loading = useAuthStore((s) => s.loading);
+  const otpError = useAuthStore((s) => s.otpError);
+  const setAuthStep = useAuthStore((s) => s.setAuthStep);
+
+  const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isValid) { setLocalError("Enter a valid email address"); return; }
+    setLocalError("");
+    await sendPasswordReset(email);
+    if (!useAuthStore.getState().otpError) {
+      setSent(true);
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-col items-center gap-3">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1c2733]">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#7eb88a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0110 0v4" />
+          </svg>
+        </div>
+        <h1 className="text-xl font-semibold text-white">Reset Password</h1>
+        <p className="text-sm text-[#6b8299] text-center">
+          Enter your email and we'll send you a reset link
+        </p>
+      </div>
+
+      {sent ? (
+        <div className="space-y-4 text-center">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1b3a2d] mx-auto">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#7eb88a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 11.08V12a10 10 0 11-5.93-9.14" />
+              <polyline points="22 4 12 14.01 9 11.01" />
+            </svg>
+          </div>
+          <p className="text-sm text-[#7eb88a]">Reset link sent!</p>
+          <p className="text-xs text-[#6b8299]">
+            Check your email for a link to reset your password.
+          </p>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="flex items-center gap-3 rounded-xl bg-[#1c2733] px-4 py-3">
+            <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#4a6580" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="2" y="4" width="16" height="12" rx="2" />
+              <path d="M2 6l8 5 8-5" />
+            </svg>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setLocalError(""); }}
+              placeholder="you@example.com"
+              className="flex-1 bg-transparent text-sm text-white placeholder-[#4a6580] outline-none"
+              autoFocus
+              aria-label="Email address"
+            />
+          </div>
+
+          {(localError || otpError) && (
+            <p className="text-xs text-red-400 text-center" role="alert">{localError || otpError}</p>
+          )}
+
+          <button
+            type="submit"
+            disabled={!isValid || loading}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#7eb88a] py-3 text-sm font-semibold text-[#0e1621] transition hover:bg-[#6da879] disabled:opacity-40"
+          >
+            {loading ? (
+              <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <circle cx="8" cy="8" r="6" /><path d="M8 2a6 6 0 010 12" strokeLinecap="round" />
+              </svg>
+            ) : "Send Reset Link"}
+          </button>
+        </form>
+      )}
+
+      <button
+        onClick={() => setAuthStep("email")}
+        className="flex w-full items-center justify-center gap-2 text-xs text-[#4a6580] transition hover:text-[#6b8299]"
+      >
+        ← Back to login
+      </button>
+    </div>
+  );
+}
+
+/* ── Step: Reset Password ───────────────────────────── */
+
+function ResetPasswordStep() {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [localError, setLocalError] = useState("");
+
+  const updatePassword = useAuthStore((s) => s.updatePassword);
+  const loading = useAuthStore((s) => s.loading);
+  const otpError = useAuthStore((s) => s.otpError);
+
+  const { strength } = getPasswordStrength(password);
+  const passwordsMatch = password === confirmPassword && password.length > 0;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (strength !== "strong") { setLocalError("Please meet all password requirements"); return; }
+    if (!passwordsMatch) { setLocalError("Passwords do not match"); return; }
+    setLocalError("");
+    await updatePassword(password);
+  };
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-col items-center gap-3">
+        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#1c2733]">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#7eb88a" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0110 0v4" />
+          </svg>
+        </div>
+        <h1 className="text-xl font-semibold text-white">New Password</h1>
+        <p className="text-sm text-[#6b8299] text-center">
+          Enter your new password below
+        </p>
+      </div>
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <PasswordInput
+          value={password}
+          onChange={setPassword}
+          placeholder="New password"
+          autoFocus
+        />
+
+        <PasswordStrength password={password} />
+
+        <PasswordInput
+          value={confirmPassword}
+          onChange={setConfirmPassword}
+          placeholder="Confirm new password"
+        />
+
+        {(localError || otpError) && (
+          <p className="text-xs text-red-400 text-center" role="alert">{localError || otpError}</p>
+        )}
+
+        <button
+          type="submit"
+          disabled={!password || strength !== "strong" || !passwordsMatch || loading}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#7eb88a] py-3 text-sm font-semibold text-[#0e1621] transition hover:bg-[#6da879] disabled:opacity-40"
+        >
+          {loading ? (
+            <svg className="animate-spin" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="8" cy="8" r="6" /><path d="M8 2a6 6 0 010 12" strokeLinecap="round" />
+            </svg>
+          ) : "Update Password"}
+        </button>
+      </form>
     </div>
   );
 }

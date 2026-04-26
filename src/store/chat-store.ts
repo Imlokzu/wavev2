@@ -15,6 +15,9 @@ export interface Conversation {
   otherUserId?: string;
   memberCount?: number;
   isBot?: boolean; // Wave official bot
+  isGroup?: boolean;
+  inviteCode?: string;
+  groupRole?: 'admin' | 'member';
 }
 
 export const conversations: Conversation[] = []; // kept for compat, real data in store
@@ -93,7 +96,7 @@ function initialsFor(name: string) {
   return name.split(" ").map(w => w[0]).join("").toUpperCase().slice(0, 2);
 }
 
-export function makeConversation(id: string, name: string, avatarUrl?: string | null, otherUserId?: string, memberCount = 2): Conversation {
+export function makeConversation(id: string, name: string, avatarUrl?: string | null, otherUserId?: string, memberCount = 2, isGroup = false): Conversation {
   const BOT_ID = "00000000-0000-0000-0000-000000000001";
   return {
     id,
@@ -108,6 +111,7 @@ export function makeConversation(id: string, name: string, avatarUrl?: string | 
     otherUserId,
     memberCount,
     isBot: otherUserId === BOT_ID,
+    isGroup,
   };
 }
 
